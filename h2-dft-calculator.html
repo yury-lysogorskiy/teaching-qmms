@@ -1,0 +1,3418 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>React App</title>
+  <style>
+    /* GCSS extracted from component */
+    
+    html,body,#root{margin:0;padding:0;height:100%;}
+  </style>
+  <!-- React from CDN -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <div id="jsx-error"></div>
+
+  <!-- Application code -->
+  <script>
+window.onerror = function(msg, src, line, col, err) { console.error('JS ERROR:', msg, 'line', line, err?.stack); return false; };
+// ============================================================
+// H₂ Dimer: HF & DFT-LDA in STO-3G — with energy decomposition
+// All quantities in atomic units (Hartree, Bohr)
+// ============================================================
+
+const STO3G = {
+  exp: [3.42525091, 0.62391373, 0.16885540],
+  coef: [0.15432897, 0.53532814, 0.44463454]
+};
+const NPRIM = 3;
+function erf(x) {
+  const ax = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * ax);
+  const y = 1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-ax * ax);
+  return x >= 0 ? y : -y;
+}
+function boysF0(x) {
+  if (x < 1e-7) return 1.0;
+  const sx = Math.sqrt(x);
+  return Math.sqrt(Math.PI) / (2 * sx) * erf(sx);
+}
+function normPrim(a) {
+  return Math.pow(2 * a / Math.PI, 0.75);
+}
+function overlapPrim(a, b, R2) {
+  return Math.pow(Math.PI / (a + b), 1.5) * Math.exp(-a * b / (a + b) * R2);
+}
+function kineticPrim(a, b, R2) {
+  const p = a + b,
+    mu = a * b / p;
+  return mu * (3 - 2 * mu * R2) * Math.pow(Math.PI / p, 1.5) * Math.exp(-mu * R2);
+}
+function nuclearPrim(a, b, Ra, Rb, Rc, Za) {
+  const p = a + b,
+    mu = a * b / p,
+    Rp = (a * Ra + b * Rb) / p;
+  return -Za * 2 * Math.PI / p * Math.exp(-mu * (Ra - Rb) ** 2) * boysF0(p * (Rp - Rc) ** 2);
+}
+function eriPrim(a, b, c, d, Ra, Rb, Rc2, Rd) {
+  const p = a + b,
+    q = c + d;
+  const Rp = (a * Ra + b * Rb) / p,
+    Rq = (c * Rc2 + d * Rd) / q;
+  return 2 * Math.pow(Math.PI, 2.5) / (p * q * Math.sqrt(p + q)) * Math.exp(-a * b / p * (Ra - Rb) ** 2 - c * d / q * (Rc2 - Rd) ** 2) * boysF0(p * q / (p + q) * (Rp - Rq) ** 2);
+}
+function contracted2(fn, pA, pB, ...extra) {
+  let v = 0;
+  for (let i = 0; i < NPRIM; i++) {
+    const ni = normPrim(STO3G.exp[i]) * STO3G.coef[i];
+    for (let j = 0; j < NPRIM; j++) {
+      const nj = normPrim(STO3G.exp[j]) * STO3G.coef[j];
+      v += ni * nj * fn(STO3G.exp[i], STO3G.exp[j], pA, pB, ...extra);
+    }
+  }
+  return v;
+}
+function contracted4(pA, pB, pC, pD) {
+  let v = 0;
+  for (let i = 0; i < NPRIM; i++) {
+    const ni = normPrim(STO3G.exp[i]) * STO3G.coef[i];
+    for (let j = 0; j < NPRIM; j++) {
+      const nj = normPrim(STO3G.exp[j]) * STO3G.coef[j];
+      for (let k = 0; k < NPRIM; k++) {
+        const nk = normPrim(STO3G.exp[k]) * STO3G.coef[k];
+        for (let l = 0; l < NPRIM; l++) {
+          const nl = normPrim(STO3G.exp[l]) * STO3G.coef[l];
+          v += ni * nj * nk * nl * eriPrim(STO3G.exp[i], STO3G.exp[j], STO3G.exp[k], STO3G.exp[l], pA, pB, pC, pD);
+        }
+      }
+    }
+  }
+  return v;
+}
+function buildIntegrals(R) {
+  const A = -R / 2,
+    B = R / 2;
+  const oS = (a, b, pa, pb) => overlapPrim(a, b, (pa - pb) ** 2);
+  const oT = (a, b, pa, pb) => kineticPrim(a, b, (pa - pb) ** 2);
+  const S11 = contracted2(oS, A, A),
+    S12 = contracted2(oS, A, B);
+  const T11 = contracted2(oT, A, A),
+    T12 = contracted2(oT, A, B),
+    T22 = contracted2(oT, B, B);
+  const oV = (a, b, pa, pb, rc, z) => nuclearPrim(a, b, pa, pb, rc, z);
+  const VA11 = contracted2(oV, A, A, A, 1),
+    VB11 = contracted2(oV, A, A, B, 1);
+  const VA12 = contracted2(oV, A, B, A, 1),
+    VB12 = contracted2(oV, A, B, B, 1);
+  const VA22 = contracted2(oV, B, B, A, 1),
+    VB22 = contracted2(oV, B, B, B, 1);
+  return {
+    S: [[S11, S12], [S12, S11]],
+    T: [[T11, T12], [T12, T22]],
+    Vne: [[VA11 + VB11, VA12 + VB12], [VA12 + VB12, VA22 + VB22]],
+    eri: {
+      '1111': contracted4(A, A, A, A),
+      '2222': contracted4(B, B, B, B),
+      '1122': contracted4(A, A, B, B),
+      '1212': contracted4(A, B, A, B),
+      '1112': contracted4(A, A, A, B),
+      '1222': contracted4(A, B, B, B)
+    },
+    Vnn: 1 / R,
+    A,
+    B
+  };
+}
+function getERI(eri, i, j, k, l) {
+  const mk = (a, b, c, d) => {
+    let p = a <= b ? [a, b] : [b, a],
+      q = c <= d ? [c, d] : [d, c];
+    if (p[0] > q[0] || p[0] === q[0] && p[1] > q[1]) [p, q] = [q, p];
+    return `${p[0]}${p[1]}${q[0]}${q[1]}`;
+  };
+  return eri[mk(i, j, k, l)] || 0;
+}
+function eig2x2(M) {
+  const a = M[0][0],
+    b = M[0][1],
+    c = M[1][1];
+  const tr = a + c,
+    disc = Math.sqrt(Math.max(0, tr * tr / 4 - (a * c - b * b)));
+  const e1 = tr / 2 - disc,
+    e2 = tr / 2 + disc;
+  let v1, v2;
+  if (Math.abs(b) < 1e-14) {
+    v1 = a <= c ? [1, 0] : [0, 1];
+    v2 = a <= c ? [0, 1] : [1, 0];
+  } else {
+    v1 = [b, e1 - a];
+    const n = Math.sqrt(v1[0] ** 2 + v1[1] ** 2);
+    v1 = [v1[0] / n, v1[1] / n];
+    v2 = [b, e2 - a];
+    const n2 = Math.sqrt(v2[0] ** 2 + v2[1] ** 2);
+    v2 = [v2[0] / n2, v2[1] / n2];
+  }
+  return {
+    vals: [e1, e2],
+    vecs: [v1, v2]
+  };
+}
+function mm2(A, B) {
+  return [[A[0][0] * B[0][0] + A[0][1] * B[1][0], A[0][0] * B[0][1] + A[0][1] * B[1][1]], [A[1][0] * B[0][0] + A[1][1] * B[1][0], A[1][0] * B[0][1] + A[1][1] * B[1][1]]];
+}
+function sHalf(S) {
+  const e = eig2x2(S);
+  const U = [[e.vecs[0][0], e.vecs[1][0]], [e.vecs[0][1], e.vecs[1][1]]];
+  const Ut = [[U[0][0], U[1][0]], [U[0][1], U[1][1]]];
+  const d = [[1 / Math.sqrt(e.vals[0]), 0], [0, 1 / Math.sqrt(e.vals[1])]];
+  return mm2(mm2(U, d), Ut);
+}
+function evalBasis(z, rc, pos) {
+  let v = 0;
+  for (let i = 0; i < NPRIM; i++) {
+    const a = STO3G.exp[i];
+    v += STO3G.coef[i] * normPrim(a) * Math.exp(-a * (rc * rc + (z - pos) ** 2));
+  }
+  return v;
+}
+function buildXCMatrix(P, posA, posB) {
+  const NZ = 60,
+    NR = 30,
+    zMin = Math.min(posA, posB) - 6,
+    zMax = Math.max(posA, posB) + 6,
+    rMax = 5;
+  const dz = (zMax - zMin) / NZ,
+    dr = rMax / NR,
+    CX = 0.75 * Math.pow(3 / Math.PI, 1 / 3);
+  let vxc = [[0, 0], [0, 0]],
+    vxM = [[0, 0], [0, 0]],
+    vcM = [[0, 0], [0, 0]],
+    Exc = 0,
+    ExOnly = 0,
+    EcOnly = 0;
+  for (let iz = 0; iz <= NZ; iz++) {
+    const z = zMin + iz * dz,
+      wz = iz === 0 || iz === NZ ? 0.5 : 1;
+    for (let ir = 0; ir <= NR; ir++) {
+      const rc = ir * dr,
+        wr = ir === 0 || ir === NR ? 0.5 : 1;
+      const w = 2 * Math.PI * rc * dz * dr * wz * wr;
+      const phi = [evalBasis(z, rc, posA), evalBasis(z, rc, posB)];
+      let rho = 0;
+      for (let m = 0; m < 2; m++) for (let n = 0; n < 2; n++) rho += P[m][n] * phi[m] * phi[n];
+      if (rho < 1e-18) continue;
+      const rho13 = Math.pow(rho, 1 / 3),
+        rs = Math.pow(3 / (4 * Math.PI * rho), 1 / 3);
+      const epsX = -CX * rho13,
+        vX = -4 / 3 * CX * rho13;
+      const epsC = -0.44 / (rs + 7.8),
+        vC = epsC * (1 + rs / (3 * (rs + 7.8)));
+      Exc += w * rho * (epsX + epsC);
+      ExOnly += w * rho * epsX;
+      EcOnly += w * rho * epsC;
+      const vxc_r = vX + vC;
+      for (let m = 0; m < 2; m++) for (let n = 0; n < 2; n++) {
+        vxc[m][n] += w * phi[m] * vxc_r * phi[n];
+        vxM[m][n] += w * phi[m] * vX * phi[n];
+        vcM[m][n] += w * phi[m] * vC * phi[n];
+      }
+    }
+  }
+  return {
+    vxc,
+    vxM,
+    vcM,
+    Exc,
+    ExOnly,
+    EcOnly
+  };
+}
+function trace2(A, B) {
+  let s = 0;
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) s += A[i][j] * B[j][i];
+  return s;
+}
+
+// orbital expectation value <psi_n| M |psi_n> where psi_n = C[:,n]
+function orbExpect(M, C, n) {
+  let s = 0;
+  for (let m = 0; m < 2; m++) for (let k = 0; k < 2; k++) s += C[m][n] * M[m][k] * C[k][n];
+  return s;
+}
+function runSCF(R, method, alpha = 0.5, opts = {}) {
+  const {
+    symGuess = false,
+    maxIter = 80,
+    conv = 1e-5,
+    noHistory = false,
+    symmetrize = false
+  } = opts;
+  const ig = buildIntegrals(R);
+  const {
+    S,
+    T,
+    Vne,
+    eri,
+    Vnn,
+    A,
+    B
+  } = ig;
+  const h = [[T[0][0] + Vne[0][0], T[0][1] + Vne[0][1]], [T[1][0] + Vne[1][0], T[1][1] + Vne[1][1]]];
+  const X = sHalf(S),
+    Xt = [[X[0][0], X[1][0]], [X[0][1], X[1][1]]];
+  // Initial guess. The default is a strongly asymmetric density (most charge on
+  // atom A) so the SCF visibly redistributes charge over several iterations — at
+  // SCF step 0 the rho(z)/orbital plot is clearly lopsided toward one atom.
+  // symGuess:true would start from a symmetric density instead.
+  let P = symGuess ? [[1, 0.5], [0.5, 1]] : [[2.0, 0.0], [0.0, 0.0]];
+  // density mixing (Sec. 2.3.1): rho_in_next = alpha*rho_new + (1-alpha)*rho_old
+  const history = [];
+  let lastStep = null;
+  let Jfin = [[0, 0], [0, 0]],
+    VXfin = [[0, 0], [0, 0]],
+    VCfin = [[0, 0], [0, 0]],
+    Ffin = [[0, 0], [0, 0]];
+  for (let iter = 0; iter < maxIter; iter++) {
+    const Pin = [[P[0][0], P[0][1]], [P[1][0], P[1][1]]]; // input density for this step
+    const F = [[h[0][0], h[0][1]], [h[1][0], h[1][1]]];
+    const J = [[0, 0], [0, 0]];
+    for (let m = 0; m < 2; m++) for (let n = 0; n < 2; n++) {
+      let j = 0;
+      for (let l = 0; l < 2; l++) for (let s = 0; s < 2; s++) j += P[l][s] * getERI(eri, m + 1, n + 1, l + 1, s + 1);
+      J[m][n] = j;
+      F[m][n] += j;
+    }
+    let EX = 0,
+      Exc = 0,
+      ExOnly = 0,
+      EcOnly = 0;
+    let VXmat = [[0, 0], [0, 0]],
+      VCmat = [[0, 0], [0, 0]]; // exchange / correlation potential matrices
+    if (method === "hf") {
+      const K = [[0, 0], [0, 0]];
+      for (let m = 0; m < 2; m++) for (let n = 0; n < 2; n++) {
+        let k = 0;
+        for (let l = 0; l < 2; l++) for (let s = 0; s < 2; s++) k += P[l][s] * getERI(eri, m + 1, l + 1, n + 1, s + 1);
+        K[m][n] = k;
+        F[m][n] -= 0.5 * k;
+      }
+      EX = -0.25 * trace2(P, K);
+      for (let m = 0; m < 2; m++) for (let n = 0; n < 2; n++) VXmat[m][n] = -0.5 * K[m][n]; // exchange potential
+    } else {
+      const xc = buildXCMatrix(P, A, B);
+      F[0][0] += xc.vxc[0][0];
+      F[0][1] += xc.vxc[0][1];
+      F[1][0] += xc.vxc[1][0];
+      F[1][1] += xc.vxc[1][1];
+      Exc = xc.Exc;
+      ExOnly = xc.ExOnly;
+      EcOnly = xc.EcOnly;
+      VXmat = xc.vxM;
+      VCmat = xc.vcM;
+    }
+    // capture matrices (overwritten each iter; the last one is the converged set)
+    Jfin = [[J[0][0], J[0][1]], [J[1][0], J[1][1]]];
+    VXfin = [[VXmat[0][0], VXmat[0][1]], [VXmat[1][0], VXmat[1][1]]];
+    VCfin = [[VCmat[0][0], VCmat[0][1]], [VCmat[1][0], VCmat[1][1]]];
+    Ffin = [[F[0][0], F[0][1]], [F[1][0], F[1][1]]];
+    const Fp = mm2(Xt, mm2(F, X));
+    const eig = eig2x2(Fp);
+    const Cp = [[eig.vecs[0][0], eig.vecs[1][0]], [eig.vecs[0][1], eig.vecs[1][1]]];
+    const C = mm2(X, Cp);
+    const Pnew = [[0, 0], [0, 0]];
+    for (let m = 0; m < 2; m++) for (let n = 0; n < 2; n++) Pnew[m][n] = 2 * C[m][0] * C[n][0];
+    const Ekin = trace2(P, T);
+    const Ene = trace2(P, Vne);
+    const EJ = 0.5 * trace2(P, J);
+    const Eband = 2 * eig.vals[0];
+    let Etot;
+    if (method === "hf") Etot = Ekin + Ene + EJ + EX + Vnn;else Etot = Ekin + Ene + EJ + Exc + Vnn;
+    const decomp = {
+      Ekin,
+      Ene,
+      EJ,
+      EX,
+      Exc,
+      ExOnly,
+      EcOnly,
+      Vnn,
+      Eband,
+      Etot,
+      Eel: Etot - Vnn,
+      doubleCount: Eband - (Etot - Vnn)
+    };
+    let dP = 0;
+    for (let m = 0; m < 2; m++) for (let n = 0; n < 2; n++) dP += (Pnew[m][n] - P[m][n]) ** 2;
+    dP = Math.sqrt(dP);
+    if (noHistory) {
+      // lightweight path for the E(R) sweep: keep only what the curve needs
+      lastStep = {
+        iter,
+        Etot,
+        eps: [...eig.vals],
+        decomp,
+        dP
+      };
+    } else {
+      // per-orbital expectation values (n=0 -> psi_1, n=1 -> psi_2)
+      const Ts = [orbExpect(T, C, 0), orbExpect(T, C, 1)]; // <psi_n|T|psi_n>
+      const EHn = [orbExpect(J, C, 0), orbExpect(J, C, 1)]; // <psi_n|V_H|psi_n>
+      const EXn = [orbExpect(VXmat, C, 0), orbExpect(VXmat, C, 1)]; // <psi_n|V_X|psi_n>
+      const ECn = [orbExpect(VCmat, C, 0), orbExpect(VCmat, C, 1)]; // <psi_n|V_C|psi_n>
+      history.push({
+        iter,
+        Etot,
+        eps: [...eig.vals],
+        decomp,
+        dP,
+        Ekin,
+        Ene,
+        EJ,
+        Exc: method === "hf" ? EX : Exc,
+        Ts,
+        EHn,
+        EXn,
+        ECn,
+        C: [[C[0][0], C[0][1]], [C[1][0], C[1][1]]],
+        Pin,
+        Jm: [[J[0][0], J[0][1]], [J[1][0], J[1][1]]],
+        VXm: [[VXmat[0][0], VXmat[0][1]], [VXmat[1][0], VXmat[1][1]]],
+        VCm: [[VCmat[0][0], VCmat[0][1]], [VCmat[1][0], VCmat[1][1]]],
+        Fm: [[F[0][0], F[0][1]], [F[1][0], F[1][1]]],
+        Pout: [[Pnew[0][0], Pnew[0][1]], [Pnew[1][0], Pnew[1][1]]]
+      });
+    }
+
+    // density mixing: rho_in_next = alpha*rho_new + (1-alpha)*rho_old  (stabilizes the SCF)
+    const Pmix = [[0, 0], [0, 0]];
+    for (let m = 0; m < 2; m++) for (let n = 0; n < 2; n++) Pmix[m][n] = alpha * Pnew[m][n] + (1 - alpha) * P[m][n];
+    if (symmetrize) {
+      // enforce the symmetric (restricted) solution for the homonuclear dimer:
+      // average the two atomic populations so the unstable symmetry-broken branch
+      // cannot take over at stretched bonds. Keeps the PES on the physical
+      // restricted branch and converges quickly.
+      const d0 = 0.5 * (Pmix[0][0] + Pmix[1][1]);
+      Pmix[0][0] = d0;
+      Pmix[1][1] = d0;
+    }
+    P = Pmix;
+    if (dP < conv && iter > 0) break;
+  }
+  if (noHistory) return {
+    last: lastStep
+  };
+  const density = [];
+  const zMin = Math.min(A, B) - 3,
+    zMax = Math.max(A, B) + 3;
+  for (let i = 0; i <= 120; i++) {
+    const z = zMin + (zMax - zMin) * i / 120;
+    const phi = [evalBasis(z, 0, A), evalBasis(z, 0, B)];
+    let rho = 0;
+    for (let m = 0; m < 2; m++) for (let n = 0; n < 2; n++) rho += P[m][n] * phi[m] * phi[n];
+    density.push({
+      z,
+      rho
+    });
+  }
+  return {
+    history,
+    P,
+    S,
+    h,
+    T,
+    Vne,
+    density,
+    Vnn,
+    A,
+    B,
+    Jfin,
+    VXfin,
+    VCfin,
+    Ffin
+  };
+}
+
+// Cache: each method's PES is computed once and reused (no recompute on tab switch).
+const _curveCache = {};
+function computeCurve(method) {
+  if (_curveCache[method]) return _curveCache[method];
+  const pts = [];
+  // Background PES sweep, computed once per method and cached. We keep a slightly
+  // asymmetric initial guess (consistent with the interactive panels) but pin the
+  // restricted symmetric solution via symmetrize:true, so every point converges
+  // quickly and cleanly onto the physical branch without symmetry-broken artifacts.
+  for (let i = 1; i <= 60; i++) {
+    const R = 0.5 + i * 0.1;
+    const res = runSCF(R, method, 1.0, {
+      maxIter: 120,
+      conv: 1e-5,
+      noHistory: true,
+      symmetrize: true
+    });
+    const last = res.last;
+    pts.push({
+      R,
+      E: last.Etot,
+      ...last.decomp
+    });
+  }
+  const Einf = pts[pts.length - 1].E;
+  const minPt = pts.reduce((a, b) => a.E < b.E ? a : b);
+  const result = {
+    pts,
+    Req: minPt.R,
+    De: Einf - minPt.E,
+    Emin: minPt.E
+  };
+  _curveCache[method] = result;
+  return result;
+}
+
+// ============================================================
+// UI
+// ============================================================
+const HA2EV = 27.211386; // Hartree -> eV
+const BOHR2ANG = 0.529177; // Bohr -> Angstrom
+
+const THEMES = {
+  dark: {
+    bg: "#0c1117",
+    card: "#151d28",
+    border: "#1e2d3d",
+    text: "#d4dce8",
+    dim: "#7b8ca0",
+    accent: "#4dabf7",
+    green: "#51cf66",
+    red: "#ff6b6b",
+    yellow: "#fcc419",
+    grid: "#1a2535",
+    orange: "#ff922b",
+    purple: "#b197fc",
+    cyan: "#1098ad"
+  },
+  light: {
+    bg: "#f6f8fb",
+    card: "#ffffff",
+    border: "#d8e0ea",
+    text: "#1a2332",
+    dim: "#5a6b80",
+    accent: "#1c6fd6",
+    green: "#1f9e4d",
+    red: "#d63a3a",
+    yellow: "#b8860b",
+    grid: "#e2e8f0",
+    orange: "#d9730d",
+    purple: "#7048c4",
+    cyan: "#0b7285"
+  }
+};
+// Mutable palette reference; set at the top of each render so all sub-components
+// (which read CL.* at render time) pick up the active theme.
+let CL = THEMES.light;
+function EnergyBar({
+  label,
+  value,
+  maxAbs,
+  color
+}) {
+  const pct = Math.min(Math.abs(value) / maxAbs * 100, 100);
+  const pos = value >= 0;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      marginBottom: 4,
+      fontSize: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 72,
+      textAlign: "right",
+      color: CL.dim,
+      flexShrink: 0,
+      fontFamily: "monospace",
+      fontSize: 13
+    }
+  }, label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 140,
+      height: 14,
+      background: CL.bg,
+      borderRadius: 3,
+      position: "relative",
+      overflow: "hidden",
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      left: "50%",
+      top: 0,
+      bottom: 0,
+      width: 1,
+      background: CL.dim + "40"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      top: 0,
+      height: "100%",
+      borderRadius: 3,
+      ...(pos ? {
+        left: "50%",
+        width: `${pct / 2}%`
+      } : {
+        right: "50%",
+        width: `${pct / 2}%`
+      }),
+      background: color,
+      opacity: 0.75
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 95,
+      fontFamily: "monospace",
+      fontSize: 14,
+      color
+    }
+  }, value >= 0 ? "+" : "", value.toFixed(5)));
+}
+function MiniPlot({
+  data,
+  xKey,
+  yKey,
+  w,
+  h,
+  color,
+  xLabel,
+  yLabel,
+  marker,
+  extraLines,
+  seriesLabels
+}) {
+  const [hover, setHover] = React.useState(null);
+  if (!data || !data.length) return null;
+  const xs = data.map(d => d[xKey]),
+    ys0 = data.map(d => d[yKey]);
+  let allYs = [...ys0];
+  if (extraLines) extraLines.forEach(l => {
+    data.forEach(d => {
+      if (d[l.key] != null) allYs.push(d[l.key]);
+    });
+  });
+  const xMin = Math.min(...xs),
+    xMax = Math.max(...xs);
+  const yMin = Math.min(...allYs),
+    yMax = Math.max(...allYs);
+  const pad = 34;
+  const sx = v => pad + (v - xMin) / (xMax - xMin || 1) * (w - 2 * pad);
+  const sy = v => h - pad - (v - yMin) / (yMax - yMin || 1) * (h - 2 * pad);
+  function onMove(e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width * w; // to viewBox coords
+    // nearest data point by x
+    let best = 0,
+      bd = 1e9;
+    data.forEach((d, i) => {
+      const dx = Math.abs(sx(d[xKey]) - mx);
+      if (dx < bd) {
+        bd = dx;
+        best = i;
+      }
+    });
+    setHover(best);
+  }
+  const hp = hover != null ? data[hover] : null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      width: "100%",
+      maxWidth: w
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${w} ${h}`,
+    style: {
+      width: "100%",
+      display: "block"
+    },
+    onMouseMove: onMove,
+    onMouseLeave: () => setHover(null)
+  }, /*#__PURE__*/React.createElement("rect", {
+    x: pad,
+    y: 6,
+    width: w - 2 * pad,
+    height: h - pad - 6,
+    fill: "none",
+    stroke: CL.grid,
+    strokeWidth: 0.5
+  }), extraLines && extraLines.map((l, i) => /*#__PURE__*/React.createElement("polyline", {
+    key: i,
+    fill: "none",
+    stroke: l.color,
+    strokeWidth: 1.2,
+    strokeDasharray: l.dash || "",
+    points: data.filter(d => d[l.key] != null).map(d => `${sx(d[xKey])},${sy(d[l.key])}`).join(" ")
+  })), /*#__PURE__*/React.createElement("polyline", {
+    fill: "none",
+    stroke: color,
+    strokeWidth: 2,
+    points: data.map(d => `${sx(d[xKey])},${sy(d[yKey])}`).join(" ")
+  }), marker && /*#__PURE__*/React.createElement("circle", {
+    cx: sx(marker.x),
+    cy: sy(marker.y),
+    r: 3.5,
+    fill: CL.yellow,
+    stroke: CL.bg,
+    strokeWidth: 1
+  }), hp && /*#__PURE__*/React.createElement("g", null, /*#__PURE__*/React.createElement("line", {
+    x1: sx(hp[xKey]),
+    y1: 6,
+    x2: sx(hp[xKey]),
+    y2: h - pad,
+    stroke: CL.dim,
+    strokeWidth: 0.6,
+    strokeDasharray: "3,3"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: sx(hp[xKey]),
+    cy: sy(hp[yKey]),
+    r: 4,
+    fill: color,
+    stroke: CL.bg,
+    strokeWidth: 1.5
+  }), extraLines && extraLines.map((l, i) => hp[l.key] != null && /*#__PURE__*/React.createElement("circle", {
+    key: i,
+    cx: sx(hp[xKey]),
+    cy: sy(hp[l.key]),
+    r: 3.5,
+    fill: l.color,
+    stroke: CL.bg,
+    strokeWidth: 1.2
+  }))), /*#__PURE__*/React.createElement("text", {
+    x: w / 2,
+    y: h - 3,
+    textAnchor: "middle",
+    fill: CL.dim,
+    fontSize: 12
+  }, xLabel), /*#__PURE__*/React.createElement("text", {
+    x: pad - 4,
+    y: sy(yMax) + 3,
+    textAnchor: "end",
+    fill: CL.dim,
+    fontSize: 11
+  }, yMax.toFixed(2)), /*#__PURE__*/React.createElement("text", {
+    x: pad - 4,
+    y: sy(yMin) + 3,
+    textAnchor: "end",
+    fill: CL.dim,
+    fontSize: 11
+  }, yMin.toFixed(2)), /*#__PURE__*/React.createElement("text", {
+    x: pad,
+    y: h - pad + 11,
+    fill: CL.dim,
+    fontSize: 11
+  }, xMin.toFixed(1)), /*#__PURE__*/React.createElement("text", {
+    x: w - pad,
+    y: h - pad + 11,
+    textAnchor: "end",
+    fill: CL.dim,
+    fontSize: 11
+  }, xMax.toFixed(1))), hp && (() => {
+    const frac = sx(hp[xKey]) / w;
+    const rightHalf = frac > 0.6;
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute",
+        left: `${frac * 100}%`,
+        top: 4,
+        transform: rightHalf ? "translateX(calc(-100% - 8px))" : "translateX(8px)",
+        background: CL.card,
+        border: `1px solid ${CL.border}`,
+        borderRadius: 6,
+        padding: "6px 9px",
+        fontSize: 13,
+        color: CL.text,
+        pointerEvents: "none",
+        whiteSpace: "nowrap",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+        zIndex: 5
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: CL.dim,
+        fontSize: 12,
+        marginBottom: 2
+      }
+    }, xLabel.replace(/\s*\(.*\)/, ""), " = ", hp[xKey].toFixed(3)), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
+      style: {
+        color
+      }
+    }, "\u25CF"), " ", seriesLabels?.main || yLabel, " = ", /*#__PURE__*/React.createElement("b", null, hp[yKey].toFixed(3))), extraLines && extraLines.map((l, i) => hp[l.key] != null && /*#__PURE__*/React.createElement("div", {
+      key: i
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: l.color
+      }
+    }, "\u25CF"), " ", seriesLabels?.[l.key] || l.key, " = ", /*#__PURE__*/React.createElement("b", null, hp[l.key].toFixed(3)))));
+  })());
+}
+function Mat({
+  m,
+  label
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      marginBottom: 1
+    }
+  }, label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "monospace",
+      fontSize: 14,
+      color: CL.text,
+      background: CL.bg,
+      borderRadius: 3,
+      padding: "3px 5px",
+      display: "inline-block",
+      lineHeight: 1.5
+    }
+  }, "[", m[0].map(v => v.toFixed(4)).join(", "), "]", /*#__PURE__*/React.createElement("br", null), "[", m[1].map(v => v.toFixed(4)).join(", "), "]"));
+}
+
+// Convergence plot: multiple series vs iteration.
+// scale="lin": plot raw values. scale="log": plot |value - converged| on log10 y-axis.
+function ConvergencePlot({
+  history,
+  series,
+  w,
+  h,
+  yLabel,
+  scale = "lin",
+  seriesLabels
+}) {
+  const [hov, setHov] = React.useState(null);
+  if (!history || history.length < 1) return null;
+  const pad = 46,
+    padR = 12,
+    padT = 8;
+  const iters = history.map(d => d.iter);
+  const xMin = Math.min(...iters),
+    xMax = Math.max(...iters, 1);
+  const sx = v => pad + (v - xMin) / (xMax - xMin || 1) * (w - pad - padR);
+  function onMove(e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width * w;
+    let best = 0,
+      bd = 1e9;
+    history.forEach((d, i) => {
+      const dx = Math.abs(sx(d.iter) - mx);
+      if (dx < bd) {
+        bd = dx;
+        best = i;
+      }
+    });
+    setHov(best);
+  }
+  const hd = hov != null ? history[hov] : null;
+  const tip = () => {
+    if (!hd) return null;
+    const frac = sx(hd.iter) / w;
+    const rightHalf = frac > 0.6;
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute",
+        left: `${frac * 100}%`,
+        top: 4,
+        transform: rightHalf ? "translateX(calc(-100% - 8px))" : "translateX(8px)",
+        background: CL.card,
+        border: `1px solid ${CL.border}`,
+        borderRadius: 6,
+        padding: "6px 9px",
+        fontSize: 13,
+        color: CL.text,
+        pointerEvents: "none",
+        whiteSpace: "nowrap",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+        zIndex: 5
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: CL.dim,
+        fontSize: 12,
+        marginBottom: 2
+      }
+    }, "iteration ", hd.iter), series.map((s, i) => /*#__PURE__*/React.createElement("div", {
+      key: i
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: s.color
+      }
+    }, "\u25CF"), " ", seriesLabels?.[i] || "series " + (i + 1), " = ", /*#__PURE__*/React.createElement("b", null, s.get(hd).toFixed(4)))));
+  };
+  if (scale === "log") {
+    // converged value = last iteration value for each series
+    const conv = series.map(s => s.get(history[history.length - 1]));
+    // collect log10|Δ| for all series & points
+    let allLog = [];
+    series.forEach((s, si) => history.forEach(d => {
+      const diff = Math.abs(s.get(d) - conv[si]);
+      if (diff > 1e-14) allLog.push(Math.log10(diff));
+    }));
+    if (allLog.length === 0) allLog = [-12, 0];
+    let yMin = Math.min(...allLog),
+      yMax = Math.max(...allLog);
+    if (yMin === yMax) {
+      yMin -= 1;
+      yMax += 1;
+    }
+    yMin = Math.floor(yMin);
+    yMax = Math.ceil(yMax);
+    const sy = v => h - pad - (v - yMin) / (yMax - yMin || 1) * (h - pad - padT);
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        width: "100%",
+        maxWidth: w
+      }
+    }, /*#__PURE__*/React.createElement("svg", {
+      viewBox: `0 0 ${w} ${h}`,
+      style: {
+        width: "100%",
+        display: "block"
+      },
+      onMouseMove: onMove,
+      onMouseLeave: () => setHov(null)
+    }, /*#__PURE__*/React.createElement("rect", {
+      x: pad,
+      y: padT,
+      width: w - pad - padR,
+      height: h - pad - padT,
+      fill: "none",
+      stroke: CL.grid,
+      strokeWidth: 0.5
+    }), Array.from({
+      length: yMax - yMin + 1
+    }, (_, i) => yMin + i).map((p, i) => {
+      const yy = sy(p);
+      if (yy < padT || yy > h - pad) return null;
+      return /*#__PURE__*/React.createElement("g", {
+        key: i
+      }, /*#__PURE__*/React.createElement("line", {
+        x1: pad,
+        y1: yy,
+        x2: w - padR,
+        y2: yy,
+        stroke: CL.grid,
+        strokeWidth: 0.4,
+        strokeDasharray: "2,3"
+      }), /*#__PURE__*/React.createElement("text", {
+        x: pad - 4,
+        y: yy + 3,
+        textAnchor: "end",
+        fill: CL.dim,
+        fontSize: 11
+      }, "10", p < 0 ? "⁻" + -p : p === 0 ? "⁰" : p));
+    }), history.filter((_, i) => i % Math.ceil(history.length / 8) === 0 || i === history.length - 1).map((d, i) => /*#__PURE__*/React.createElement("text", {
+      key: i,
+      x: sx(d.iter),
+      y: h - pad + 12,
+      textAnchor: "middle",
+      fill: CL.dim,
+      fontSize: 11
+    }, d.iter)), series.map((s, si) => {
+      const pts = history.map(d => {
+        const diff = Math.abs(s.get(d) - conv[si]);
+        return diff > 1e-14 ? {
+          x: d.iter,
+          y: Math.log10(diff)
+        } : null;
+      }).filter(Boolean);
+      return /*#__PURE__*/React.createElement("g", {
+        key: si
+      }, /*#__PURE__*/React.createElement("polyline", {
+        fill: "none",
+        stroke: s.color,
+        strokeWidth: 1.6,
+        strokeDasharray: s.dash || "",
+        points: pts.map(p => `${sx(p.x)},${sy(p.y)}`).join(" ")
+      }), pts.map((p, j) => /*#__PURE__*/React.createElement("circle", {
+        key: j,
+        cx: sx(p.x),
+        cy: sy(p.y),
+        r: 1.8,
+        fill: s.color
+      })));
+    }), hd && /*#__PURE__*/React.createElement("line", {
+      x1: sx(hd.iter),
+      y1: padT,
+      x2: sx(hd.iter),
+      y2: h - pad,
+      stroke: CL.dim,
+      strokeWidth: 0.6,
+      strokeDasharray: "3,3"
+    }), /*#__PURE__*/React.createElement("text", {
+      x: (w + pad) / 2,
+      y: h - 4,
+      textAnchor: "middle",
+      fill: CL.dim,
+      fontSize: 12
+    }, "SCF iteration"), /*#__PURE__*/React.createElement("text", {
+      x: 12,
+      y: (h - pad) / 2 + padT,
+      fill: CL.dim,
+      fontSize: 12,
+      transform: `rotate(-90,12,${(h - pad) / 2 + padT})`
+    }, "|", yLabel, " \u2212 converged|")), tip());
+  }
+
+  // linear scale
+  let allY = [];
+  series.forEach(s => history.forEach(d => allY.push(s.get(d))));
+  let yMin = Math.min(...allY),
+    yMax = Math.max(...allY);
+  if (yMin === yMax) {
+    yMin -= 1;
+    yMax += 1;
+  }
+  const yPad = (yMax - yMin) * 0.08;
+  yMin -= yPad;
+  yMax += yPad;
+  const sy = v => h - pad - (v - yMin) / (yMax - yMin || 1) * (h - pad - padT);
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      width: "100%",
+      maxWidth: w
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${w} ${h}`,
+    style: {
+      width: "100%",
+      display: "block"
+    },
+    onMouseMove: onMove,
+    onMouseLeave: () => setHov(null)
+  }, /*#__PURE__*/React.createElement("rect", {
+    x: pad,
+    y: padT,
+    width: w - pad - padR,
+    height: h - pad - padT,
+    fill: "none",
+    stroke: CL.grid,
+    strokeWidth: 0.5
+  }), [0, 0.25, 0.5, 0.75, 1].map((f, i) => {
+    const yv = yMin + f * (yMax - yMin);
+    const yy = sy(yv);
+    return /*#__PURE__*/React.createElement("g", {
+      key: i
+    }, /*#__PURE__*/React.createElement("line", {
+      x1: pad,
+      y1: yy,
+      x2: w - padR,
+      y2: yy,
+      stroke: CL.grid,
+      strokeWidth: 0.4,
+      strokeDasharray: "2,3"
+    }), /*#__PURE__*/React.createElement("text", {
+      x: pad - 4,
+      y: yy + 3,
+      textAnchor: "end",
+      fill: CL.dim,
+      fontSize: 11
+    }, yv.toFixed(2)));
+  }), history.filter((_, i) => i % Math.ceil(history.length / 8) === 0 || i === history.length - 1).map((d, i) => /*#__PURE__*/React.createElement("text", {
+    key: i,
+    x: sx(d.iter),
+    y: h - pad + 12,
+    textAnchor: "middle",
+    fill: CL.dim,
+    fontSize: 11
+  }, d.iter)), series.map((s, i) => /*#__PURE__*/React.createElement("g", {
+    key: i
+  }, /*#__PURE__*/React.createElement("polyline", {
+    fill: "none",
+    stroke: s.color,
+    strokeWidth: 1.6,
+    strokeDasharray: s.dash || "",
+    points: history.map(d => `${sx(d.iter)},${sy(s.get(d))}`).join(" ")
+  }), history.map((d, j) => /*#__PURE__*/React.createElement("circle", {
+    key: j,
+    cx: sx(d.iter),
+    cy: sy(s.get(d)),
+    r: 1.8,
+    fill: s.color
+  })))), hd && /*#__PURE__*/React.createElement("g", null, /*#__PURE__*/React.createElement("line", {
+    x1: sx(hd.iter),
+    y1: padT,
+    x2: sx(hd.iter),
+    y2: h - pad,
+    stroke: CL.dim,
+    strokeWidth: 0.6,
+    strokeDasharray: "3,3"
+  }), series.map((s, i) => /*#__PURE__*/React.createElement("circle", {
+    key: i,
+    cx: sx(hd.iter),
+    cy: sy(s.get(hd)),
+    r: 4,
+    fill: s.color,
+    stroke: CL.bg,
+    strokeWidth: 1.5
+  }))), /*#__PURE__*/React.createElement("text", {
+    x: (w + pad) / 2,
+    y: h - 4,
+    textAnchor: "middle",
+    fill: CL.dim,
+    fontSize: 12
+  }, "SCF iteration"), /*#__PURE__*/React.createElement("text", {
+    x: 12,
+    y: (h - pad) / 2 + padT,
+    fill: CL.dim,
+    fontSize: 12,
+    transform: `rotate(-90,12,${(h - pad) / 2 + padT})`
+  }, yLabel)), tip());
+}
+
+// Log-scale convergence of dP (density matrix change)
+function LogConvPlot({
+  history,
+  w,
+  h,
+  scale = "log"
+}) {
+  const data = history.filter(d => d.dP != null && d.dP > 0);
+  if (data.length < 1) return null;
+  const pad = 46,
+    padR = 12,
+    padT = 8;
+  const iters = data.map(d => d.iter);
+  const xMin = Math.min(...iters),
+    xMax = Math.max(...iters, 1);
+  const sx = v => pad + (v - xMin) / (xMax - xMin || 1) * (w - pad - padR);
+  if (scale === "lin") {
+    const vals = data.map(d => d.dP);
+    let yMin = 0,
+      yMax = Math.max(...vals) * 1.08;
+    const sy = v => h - pad - (v - yMin) / (yMax - yMin || 1) * (h - pad - padT);
+    return /*#__PURE__*/React.createElement("svg", {
+      viewBox: `0 0 ${w} ${h}`,
+      style: {
+        width: "100%",
+        maxWidth: w
+      }
+    }, /*#__PURE__*/React.createElement("rect", {
+      x: pad,
+      y: padT,
+      width: w - pad - padR,
+      height: h - pad - padT,
+      fill: "none",
+      stroke: CL.grid,
+      strokeWidth: 0.5
+    }), [0, 0.25, 0.5, 0.75, 1].map((f, i) => {
+      const yv = yMin + f * (yMax - yMin);
+      const yy = sy(yv);
+      return /*#__PURE__*/React.createElement("g", {
+        key: i
+      }, /*#__PURE__*/React.createElement("line", {
+        x1: pad,
+        y1: yy,
+        x2: w - padR,
+        y2: yy,
+        stroke: CL.grid,
+        strokeWidth: 0.4,
+        strokeDasharray: "2,3"
+      }), /*#__PURE__*/React.createElement("text", {
+        x: pad - 4,
+        y: yy + 3,
+        textAnchor: "end",
+        fill: CL.dim,
+        fontSize: 11
+      }, yv.toFixed(2)));
+    }), data.filter((_, i) => i % Math.ceil(data.length / 8) === 0 || i === data.length - 1).map((d, i) => /*#__PURE__*/React.createElement("text", {
+      key: i,
+      x: sx(d.iter),
+      y: h - pad + 12,
+      textAnchor: "middle",
+      fill: CL.dim,
+      fontSize: 11
+    }, d.iter)), /*#__PURE__*/React.createElement("polyline", {
+      fill: "none",
+      stroke: CL.yellow,
+      strokeWidth: 1.8,
+      points: data.map(d => `${sx(d.iter)},${sy(d.dP)}`).join(" ")
+    }), data.map((d, j) => /*#__PURE__*/React.createElement("circle", {
+      key: j,
+      cx: sx(d.iter),
+      cy: sy(d.dP),
+      r: 2,
+      fill: CL.yellow
+    })), /*#__PURE__*/React.createElement("text", {
+      x: (w + pad) / 2,
+      y: h - 4,
+      textAnchor: "middle",
+      fill: CL.dim,
+      fontSize: 12
+    }, "SCF iteration"), /*#__PURE__*/React.createElement("text", {
+      x: 12,
+      y: (h - pad) / 2 + padT,
+      fill: CL.dim,
+      fontSize: 12,
+      transform: `rotate(-90,12,${(h - pad) / 2 + padT})`
+    }, "|\u0394P|"));
+  }
+  const logs = data.map(d => Math.log10(d.dP));
+  let yMin = Math.floor(Math.min(...logs)),
+    yMax = Math.ceil(Math.max(...logs));
+  if (yMin === yMax) {
+    yMin -= 1;
+    yMax += 1;
+  }
+  const sy = v => h - pad - (v - yMin) / (yMax - yMin || 1) * (h - pad - padT);
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${w} ${h}`,
+    style: {
+      width: "100%",
+      maxWidth: w
+    }
+  }, /*#__PURE__*/React.createElement("rect", {
+    x: pad,
+    y: padT,
+    width: w - pad - padR,
+    height: h - pad - padT,
+    fill: "none",
+    stroke: CL.grid,
+    strokeWidth: 0.5
+  }), Array.from({
+    length: yMax - yMin + 1
+  }, (_, i) => yMin + i).map((p, i) => {
+    const yy = sy(p);
+    if (yy < padT || yy > h - pad) return null;
+    return /*#__PURE__*/React.createElement("g", {
+      key: i
+    }, /*#__PURE__*/React.createElement("line", {
+      x1: pad,
+      y1: yy,
+      x2: w - padR,
+      y2: yy,
+      stroke: CL.grid,
+      strokeWidth: 0.4,
+      strokeDasharray: "2,3"
+    }), /*#__PURE__*/React.createElement("text", {
+      x: pad - 4,
+      y: yy + 3,
+      textAnchor: "end",
+      fill: CL.dim,
+      fontSize: 11
+    }, "10", p < 0 ? "⁻" + -p : p === 0 ? "⁰" : p));
+  }), data.filter((_, i) => i % Math.ceil(data.length / 8) === 0 || i === data.length - 1).map((d, i) => /*#__PURE__*/React.createElement("text", {
+    key: i,
+    x: sx(d.iter),
+    y: h - pad + 12,
+    textAnchor: "middle",
+    fill: CL.dim,
+    fontSize: 11
+  }, d.iter)), /*#__PURE__*/React.createElement("polyline", {
+    fill: "none",
+    stroke: CL.yellow,
+    strokeWidth: 1.8,
+    points: data.map(d => `${sx(d.iter)},${sy(Math.log10(d.dP))}`).join(" ")
+  }), data.map((d, j) => /*#__PURE__*/React.createElement("circle", {
+    key: j,
+    cx: sx(d.iter),
+    cy: sy(Math.log10(d.dP)),
+    r: 2,
+    fill: CL.yellow
+  })), /*#__PURE__*/React.createElement("text", {
+    x: (w + pad) / 2,
+    y: h - 4,
+    textAnchor: "middle",
+    fill: CL.dim,
+    fontSize: 12
+  }, "SCF iteration"), /*#__PURE__*/React.createElement("text", {
+    x: 12,
+    y: (h - pad) / 2 + padT,
+    fill: CL.dim,
+    fontSize: 12,
+    transform: `rotate(-90,12,${(h - pad) / 2 + padT})`
+  }, "|\u0394P| (log)"));
+}
+
+// Eigenvalue level diagram + orbital wavefunctions ψ_n(z) for one SCF iteration
+function OrbitalView({
+  step,
+  A,
+  B,
+  w,
+  h
+}) {
+  if (!step || !step.C) return null;
+  const {
+    eps,
+    C,
+    Pin
+  } = step;
+  // ψ_n(z) along bond axis (r=0). C columns are orbital coefficients.
+  const zMin = Math.min(A, B) - 3.2,
+    zMax = Math.max(A, B) + 3.2;
+  const NPTS = 120;
+  const psi = [[], []]; // psi[orbital] = array of {z, val}
+  const rhoIn = []; // input (guess) density for this step: shows the lopsided guess
+  for (let i = 0; i <= NPTS; i++) {
+    const z = zMin + (zMax - zMin) * i / NPTS;
+    const phiA = evalBasis(z, 0, A),
+      phiB = evalBasis(z, 0, B);
+    for (let n = 0; n < 2; n++) psi[n].push({
+      z,
+      val: C[0][n] * phiA + C[1][n] * phiB
+    });
+    if (Pin) {
+      const rho = Pin[0][0] * phiA * phiA + 2 * Pin[0][1] * phiA * phiB + Pin[1][1] * phiB * phiB;
+      rhoIn.push({
+        z,
+        val: rho
+      });
+    }
+  }
+  // fix global sign so bonding orbital is positive in the middle (cosmetic)
+  for (let n = 0; n < 2; n++) {
+    const mid = psi[n][Math.floor(NPTS / 2)].val;
+    if (mid < 0) psi[n] = psi[n].map(p => ({
+      z: p.z,
+      val: -p.val
+    }));
+  }
+  const maxPsi = Math.max(...psi.flat().map(p => Math.abs(p.val))) || 1;
+  const maxRho = Math.max(...rhoIn.map(p => p.val), 0.01);
+
+  // --- left: energy level diagram ---
+  const lvW = 120,
+    plotW = w - lvW - 12;
+  const epsEV = eps.map(e => e * HA2EV);
+  const eMin = Math.min(...epsEV) - 3,
+    eMax = Math.max(...epsEV) + 3;
+  const lvY = e => 16 + (eMax - e) / (eMax - eMin) * (h - 40);
+  const occ = [2, 0]; // closed-shell: lowest orbital doubly occupied
+
+  // --- right: input-density strip on top + two psi plots stacked below ---
+  const rhoStripH = 44; // height of the ρ_in(z) strip
+  const halfH = (h - 24 - rhoStripH) / 2; // each orbital panel height
+  const pX = lvW + 12;
+  const sx = z => pX + (z - zMin) / (zMax - zMin) * plotW;
+  const orbColor = [CL.green, CL.red];
+  const rhoBaseY = 16 + rhoStripH - 6; // baseline of ρ_in strip
+  const rhoSy = v => rhoBaseY - v / maxRho * (rhoStripH - 14);
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${w} ${h}`,
+    style: {
+      width: "100%",
+      maxWidth: w
+    }
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: 40,
+    y1: 12,
+    x2: 40,
+    y2: h - 24,
+    stroke: CL.grid,
+    strokeWidth: 0.8
+  }), /*#__PURE__*/React.createElement("text", {
+    x: 14,
+    y: 12,
+    fill: CL.dim,
+    fontSize: 12
+  }, "\u03B5 (eV)"), epsEV.map((e, n) => {
+    const yy = lvY(e);
+    return /*#__PURE__*/React.createElement("g", {
+      key: n
+    }, /*#__PURE__*/React.createElement("line", {
+      x1: 48,
+      y1: yy,
+      x2: 108,
+      y2: yy,
+      stroke: orbColor[n],
+      strokeWidth: 2.5
+    }), /*#__PURE__*/React.createElement("text", {
+      x: 112,
+      y: yy + 3,
+      fill: orbColor[n],
+      fontSize: 13
+    }, "\u03B5", n + 1, "=", e.toFixed(2)), occ[n] >= 1 && /*#__PURE__*/React.createElement("text", {
+      x: 72,
+      y: yy - 3,
+      textAnchor: "middle",
+      fill: CL.text,
+      fontSize: 14
+    }, "\u2191\u2193"), /*#__PURE__*/React.createElement("text", {
+      x: 44,
+      y: yy + 3,
+      textAnchor: "end",
+      fill: CL.dim,
+      fontSize: 11
+    }, n === 0 ? "ψ₊" : "ψ₋"));
+  }), rhoIn.length > 0 && (() => {
+    const area = `${sx(zMin)},${rhoBaseY} ` + rhoIn.map(p => `${sx(p.z)},${rhoSy(p.val)}`).join(" ") + ` ${sx(zMax)},${rhoBaseY}`;
+    return /*#__PURE__*/React.createElement("g", null, /*#__PURE__*/React.createElement("polygon", {
+      points: area,
+      fill: CL.cyan,
+      opacity: 0.18
+    }), /*#__PURE__*/React.createElement("polyline", {
+      fill: "none",
+      stroke: CL.cyan,
+      strokeWidth: 1.6,
+      points: rhoIn.map(p => `${sx(p.z)},${rhoSy(p.val)}`).join(" ")
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: sx(A),
+      cy: rhoBaseY,
+      r: 2.5,
+      fill: CL.dim
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: sx(B),
+      cy: rhoBaseY,
+      r: 2.5,
+      fill: CL.dim
+    }), /*#__PURE__*/React.createElement("text", {
+      x: pX + 4,
+      y: 20,
+      fill: CL.cyan,
+      fontSize: 13
+    }, "\u03C1_in(z) \u2014 input density this step"), /*#__PURE__*/React.createElement("text", {
+      x: sx(A),
+      y: rhoBaseY + 10,
+      textAnchor: "middle",
+      fill: CL.dim,
+      fontSize: 11
+    }, "A"), /*#__PURE__*/React.createElement("text", {
+      x: sx(B),
+      y: rhoBaseY + 10,
+      textAnchor: "middle",
+      fill: CL.dim,
+      fontSize: 11
+    }, "B"));
+  })(), psi.map((p, n) => {
+    // n=0 is bonding (lower ε) -> bottom slot; n=1 antibonding -> top slot
+    const slot = 1 - n; // 0 = top, 1 = bottom
+    const baseY = 16 + rhoStripH + slot * (halfH + 4) + halfH / 2;
+    const sy = v => baseY - v / maxPsi * (halfH / 2 - 4);
+    return /*#__PURE__*/React.createElement("g", {
+      key: n
+    }, /*#__PURE__*/React.createElement("line", {
+      x1: pX,
+      y1: baseY,
+      x2: pX + plotW,
+      y2: baseY,
+      stroke: CL.grid,
+      strokeWidth: 0.5,
+      strokeDasharray: "2,3"
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: sx(A),
+      cy: baseY,
+      r: 2.5,
+      fill: CL.dim
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: sx(B),
+      cy: baseY,
+      r: 2.5,
+      fill: CL.dim
+    }), /*#__PURE__*/React.createElement("polyline", {
+      fill: "none",
+      stroke: orbColor[n],
+      strokeWidth: 1.8,
+      points: p.map(pt => `${sx(pt.z)},${sy(pt.val)}`).join(" ")
+    }), /*#__PURE__*/React.createElement("text", {
+      x: pX + 4,
+      y: baseY - halfH / 2 + 10,
+      fill: orbColor[n],
+      fontSize: 13
+    }, n === 0 ? "ψ₊ (bonding)" : "ψ₋ (anti-bonding)", " ", occ[n] > 0 ? `— ${occ[n]}e` : "— empty"), /*#__PURE__*/React.createElement("text", {
+      x: pX + plotW - 2,
+      y: baseY + halfH / 2 - 2,
+      textAnchor: "end",
+      fill: CL.dim,
+      fontSize: 11
+    }, "z (Bohr)"));
+  }));
+}
+
+// SCF cycle flow diagram. Highlights the matrix-build step where HF and LDA differ.
+function SCFFlowchart({
+  method,
+  w
+}) {
+  const isHF = method === "hf";
+  const h = 470;
+  const cx = w / 2;
+  // box helper coords
+  const boxW = 300,
+    boxH = 42,
+    x0 = cx - boxW / 2;
+  const ys = [18, 92, 166, 256, 330, 404]; // y positions of boxes
+  const box = (y, title, sub, fill, stroke) => /*#__PURE__*/React.createElement("g", null, /*#__PURE__*/React.createElement("rect", {
+    x: x0,
+    y: y,
+    width: boxW,
+    height: boxH,
+    rx: 8,
+    fill: fill || CL.card,
+    stroke: stroke || CL.border,
+    strokeWidth: 1.5
+  }), /*#__PURE__*/React.createElement("text", {
+    x: cx,
+    y: y + (sub ? 17 : 25),
+    textAnchor: "middle",
+    fill: CL.text,
+    fontSize: 14,
+    fontWeight: 600
+  }, title), sub && /*#__PURE__*/React.createElement("text", {
+    x: cx,
+    y: y + 33,
+    textAnchor: "middle",
+    fill: CL.dim,
+    fontSize: 12
+  }, sub));
+  const arrow = (y1, y2, label) => /*#__PURE__*/React.createElement("g", null, /*#__PURE__*/React.createElement("line", {
+    x1: cx,
+    y1: y1,
+    x2: cx,
+    y2: y2 - 7,
+    stroke: CL.dim,
+    strokeWidth: 1.5
+  }), /*#__PURE__*/React.createElement("polygon", {
+    points: `${cx},${y2 - 1} ${cx - 5},${y2 - 9} ${cx + 5},${y2 - 9}`,
+    fill: CL.dim
+  }), label && /*#__PURE__*/React.createElement("text", {
+    x: cx + 10,
+    y: (y1 + y2) / 2 + 3,
+    fill: CL.dim,
+    fontSize: 11
+  }, label));
+  const mid = ys[3] + boxH / 2;
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${w} ${h}`,
+    style: {
+      width: "100%",
+      maxWidth: w
+    }
+  }, box(ys[0], "1. Initial guess for density ρ", "(here: both electrons on atom A)"), arrow(ys[0] + boxH, ys[1]), box(ys[1], "2. Build Hartree potential V_H[ρ]", "Coulomb repulsion from ρ (analytic ERIs)"), arrow(ys[1] + boxH, ys[2]), box(ys[2], isHF ? "3. Add exact exchange  −½K" : "3. Add V_XC[ρ]  (LDA)", isHF ? "Fock matrix  F = h + J − ½K" : "Kohn-Sham  F = h + J + V_XC  (grid)", isHF ? CL.purple + "22" : CL.cyan + "22", isHF ? CL.purple : CL.cyan), arrow(ys[2] + boxH, ys[3]), box(ys[3], "4. Solve  F C = S C ε", "orthogonalize (S^−½), diagonalize 2×2"), arrow(ys[3] + boxH, ys[4]), box(ys[4], "5. New density  ρ = Σ f_n |ψ_n|²", "occupy lowest orbital (2 e⁻)"), arrow(ys[4] + boxH, ys[5], "mix: αρ_new+(1−α)ρ_old"), box(ys[5], "6. Converged?  |Δρ| < tol", "yes → done   ·   no → back to step 2", CL.yellow + "18", CL.yellow), (() => {
+    const lx = x0 - 26;
+    const yTop = ys[1] + boxH / 2,
+      yBot = ys[5] + boxH / 2;
+    return /*#__PURE__*/React.createElement("g", null, /*#__PURE__*/React.createElement("line", {
+      x1: x0,
+      y1: yBot,
+      x2: lx,
+      y2: yBot,
+      stroke: CL.accent,
+      strokeWidth: 1.5
+    }), /*#__PURE__*/React.createElement("line", {
+      x1: lx,
+      y1: yBot,
+      x2: lx,
+      y2: yTop,
+      stroke: CL.accent,
+      strokeWidth: 1.5
+    }), /*#__PURE__*/React.createElement("line", {
+      x1: lx,
+      y1: yTop,
+      x2: x0 - 1,
+      y2: yTop,
+      stroke: CL.accent,
+      strokeWidth: 1.5
+    }), /*#__PURE__*/React.createElement("polygon", {
+      points: `${x0 + 1},${yTop} ${x0 - 7},${yTop - 5} ${x0 - 7},${yTop + 5}`,
+      fill: CL.accent
+    }), /*#__PURE__*/React.createElement("text", {
+      x: lx - 6,
+      y: (yTop + yBot) / 2,
+      textAnchor: "end",
+      fill: CL.accent,
+      fontSize: 12,
+      transform: `rotate(-90,${lx - 6},${(yTop + yBot) / 2})`
+    }, "self-consistency loop"));
+  })());
+}
+
+// Visual breakdown of the Fock / Kohn-Sham matrix as a sum of contributions.
+// Renders 2x2 number grids with +/- operators between them and a color legend.
+function MatrixSum({
+  terms,
+  result,
+  resultLabel
+}) {
+  // terms: [{label, sublabel, m:2x2, sign:"+"|"−"|"", color}]
+  const cell = v => (v >= 0 ? "+" : "") + v.toFixed(2);
+  const Grid = ({
+    m,
+    color
+  }) => /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "inline-grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 2,
+      background: CL.bg,
+      border: `1px solid ${color || CL.border}`,
+      borderRadius: 5,
+      padding: "4px 5px"
+    }
+  }, m.flat().map((v, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      fontFamily: "monospace",
+      fontSize: 13,
+      color: v < 0 ? CL.red : CL.text,
+      textAlign: "right",
+      minWidth: 50,
+      padding: "0 2px"
+    }
+  }, cell(v))));
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      flexWrap: "wrap"
+    }
+  }, terms.map((t, i) => /*#__PURE__*/React.createElement(React.Fragment, {
+    key: i
+  }, t.sign && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 20,
+      color: CL.dim,
+      fontWeight: 600
+    }
+  }, t.sign), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: t.color || CL.text,
+      marginBottom: 2
+    }
+  }, t.label), /*#__PURE__*/React.createElement(Grid, {
+    m: t.m,
+    color: t.color
+  }), t.sublabel && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: CL.dim,
+      marginTop: 2,
+      maxWidth: 120
+    }
+  }, t.sublabel)))), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 20,
+      color: CL.dim,
+      fontWeight: 600
+    }
+  }, "="), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: CL.yellow,
+      marginBottom: 2
+    }
+  }, resultLabel), /*#__PURE__*/React.createElement(Grid, {
+    m: result,
+    color: CL.yellow
+  })));
+}
+
+// Horizontal scalar-energy sum: shows E_total = T + V_ne + E_H + E_X (+E_C) + V_nn
+// as labeled boxes with values (eV) and a running total.
+function EnergySum({
+  terms,
+  total
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "stretch",
+      gap: 6,
+      flexWrap: "wrap"
+    }
+  }, terms.map((t, i) => /*#__PURE__*/React.createElement(React.Fragment, {
+    key: i
+  }, i > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      fontSize: 20,
+      color: CL.dim,
+      fontWeight: 600
+    }
+  }, "+"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      border: `1.5px solid ${t.color}`,
+      borderRadius: 7,
+      padding: "6px 10px",
+      minWidth: 78,
+      background: t.color + "12"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      color: t.color
+    }
+  }, t.label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "monospace",
+      fontSize: 15,
+      color: t.value < 0 ? CL.red : CL.text,
+      marginTop: 2
+    }
+  }, t.value >= 0 ? "+" : "", t.value.toFixed(2)), t.sub && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: CL.dim,
+      marginTop: 1
+    }
+  }, t.sub)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      fontSize: 20,
+      color: CL.dim,
+      fontWeight: 600
+    }
+  }, "="), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      border: `2px solid ${CL.yellow}`,
+      borderRadius: 7,
+      padding: "6px 12px",
+      minWidth: 90,
+      background: CL.yellow + "18"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      color: CL.yellow
+    }
+  }, "E_total"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "monospace",
+      fontSize: 16,
+      fontWeight: 700,
+      color: total < 0 ? CL.red : CL.text,
+      marginTop: 2
+    }
+  }, total >= 0 ? "+" : "", total.toFixed(2)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: CL.dim,
+      marginTop: 1
+    }
+  }, "eV")));
+}
+
+// Renders the Roothaan equation  F C = S C ε  as labeled 2x2 matrices.
+// C's columns are the two MOs; ε is diagonal (the two orbital energies).
+function EigenEquation({
+  F,
+  S,
+  C,
+  eps
+}) {
+  const cell = v => (v >= 0 ? "+" : "") + v.toFixed(2);
+  const Grid = ({
+    m,
+    color,
+    colTint
+  }) => /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "inline-grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 2,
+      background: CL.bg,
+      border: `1px solid ${color || CL.border}`,
+      borderRadius: 5,
+      padding: "4px 5px"
+    }
+  }, m.flat().map((v, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      fontFamily: "monospace",
+      fontSize: 13,
+      color: v < 0 ? CL.red : CL.text,
+      textAlign: "right",
+      minWidth: 50,
+      padding: "0 2px",
+      background: colTint ? i % 2 === 0 ? CL.green + "14" : CL.red + "14" : "transparent",
+      borderRadius: 2
+    }
+  }, cell(v))));
+  // Show energies in eV: F → eV, ε → eV. C is dimensionless, S is dimensionless,
+  // so F[eV] C = S C ε[eV] stays balanced.
+  const FeV = F.map(r => r.map(x => x * HA2EV));
+  const epsDiag = [[eps[0] * HA2EV, 0], [0, eps[1] * HA2EV]];
+  const block = (label, sub, node) => /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, label), node, sub && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: CL.dim,
+      marginTop: 2
+    }
+  }, sub));
+  const op = s => /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 20,
+      color: CL.dim,
+      fontWeight: 600
+    }
+  }, s);
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 7,
+      flexWrap: "wrap"
+    }
+  }, block("F", "Fock/KS (eV)", /*#__PURE__*/React.createElement(Grid, {
+    m: FeV,
+    color: CL.yellow
+  })), op("·"), block("C", "cols = MOs", /*#__PURE__*/React.createElement(Grid, {
+    m: C,
+    color: CL.green,
+    colTint: true
+  })), op("="), block("S", "overlap", /*#__PURE__*/React.createElement(Grid, {
+    m: S,
+    color: CL.accent
+  })), op("·"), block("C", "cols = MOs", /*#__PURE__*/React.createElement(Grid, {
+    m: C,
+    color: CL.green,
+    colTint: true
+  })), op("·"), block("ε", "diag (eV)", /*#__PURE__*/React.createElement(Grid, {
+    m: epsDiag,
+    color: CL.purple
+  })));
+}
+
+// Small 1D curve plot for inline React.use in the flowchart (rho(z), V_H(z), etc.)
+function MiniCurve({
+  pts,
+  w,
+  h,
+  color,
+  fill,
+  label,
+  xlabel,
+  A,
+  B,
+  zMin,
+  zMax
+}) {
+  if (!pts || !pts.length) return null;
+  const pad = 6,
+    padB = 16,
+    padL = 8;
+  const ymin = Math.min(0, ...pts.map(p => p.v)),
+    ymax = Math.max(...pts.map(p => p.v), 1e-6);
+  const sx = z => padL + (z - zMin) / (zMax - zMin) * (w - padL - pad);
+  const sy = v => h - padB - (v - ymin) / (ymax - ymin || 1) * (h - padB - pad);
+  const line = pts.map(p => `${sx(p.z)},${sy(p.v)}`).join(" ");
+  const area = `${sx(pts[0].z)},${sy(0)} ` + line + ` ${sx(pts[pts.length - 1].z)},${sy(0)}`;
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${w} ${h}`,
+    style: {
+      width: "100%",
+      maxWidth: w
+    }
+  }, fill && /*#__PURE__*/React.createElement("polygon", {
+    points: area,
+    fill: color,
+    opacity: 0.16
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: padL,
+    y1: sy(0),
+    x2: w - pad,
+    y2: sy(0),
+    stroke: CL.grid,
+    strokeWidth: 0.5
+  }), /*#__PURE__*/React.createElement("polyline", {
+    fill: "none",
+    stroke: color,
+    strokeWidth: 1.8,
+    points: line
+  }), A != null && /*#__PURE__*/React.createElement("circle", {
+    cx: sx(A),
+    cy: sy(0),
+    r: 2.5,
+    fill: CL.dim
+  }), B != null && /*#__PURE__*/React.createElement("circle", {
+    cx: sx(B),
+    cy: sy(0),
+    r: 2.5,
+    fill: CL.dim
+  }), A != null && /*#__PURE__*/React.createElement("text", {
+    x: sx(A),
+    y: h - 4,
+    textAnchor: "middle",
+    fill: CL.dim,
+    fontSize: 10
+  }, "A"), B != null && /*#__PURE__*/React.createElement("text", {
+    x: sx(B),
+    y: h - 4,
+    textAnchor: "middle",
+    fill: CL.dim,
+    fontSize: 10
+  }, "B"), label && /*#__PURE__*/React.createElement("text", {
+    x: padL + 2,
+    y: 12,
+    fill: color,
+    fontSize: 12,
+    fontWeight: 600
+  }, label));
+}
+
+// Compact eigenvalue-level + wavefunction view for one SCF step (used after step 4)
+function EigenSolutionView({
+  step,
+  A,
+  B,
+  w,
+  h
+}) {
+  if (!step || !step.C) return null;
+  const {
+    eps,
+    C
+  } = step;
+  const zMin = Math.min(A, B) - 3.2,
+    zMax = Math.max(A, B) + 3.2,
+    NPTS = 100;
+  const psi = [[], []];
+  for (let i = 0; i <= NPTS; i++) {
+    const z = zMin + (zMax - zMin) * i / NPTS;
+    const pa = evalBasis(z, 0, A),
+      pb = evalBasis(z, 0, B);
+    for (let n = 0; n < 2; n++) psi[n].push({
+      z,
+      val: C[0][n] * pa + C[1][n] * pb
+    });
+  }
+  for (let n = 0; n < 2; n++) {
+    const mid = psi[n][Math.floor(NPTS / 2)].val;
+    if (mid < 0) psi[n] = psi[n].map(p => ({
+      z: p.z,
+      val: -p.val
+    }));
+  }
+  const maxPsi = Math.max(...psi.flat().map(p => Math.abs(p.val))) || 1;
+  const epsEV = eps.map(e => e * HA2EV);
+  const occ = [2, 0];
+  const lvW = 150,
+    plotW = w - lvW - 10,
+    pX = lvW + 10;
+  const eMin = Math.min(...epsEV) - 3,
+    eMax = Math.max(...epsEV) + 3;
+  const lvY = e => 18 + (eMax - e) / (eMax - eMin) * (h - 36);
+  const sx = z => pX + (z - zMin) / (zMax - zMin) * plotW;
+  const orbColor = [CL.green, CL.red];
+  const halfH = (h - 20) / 2;
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${w} ${h}`,
+    style: {
+      width: "100%",
+      maxWidth: w
+    }
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: 46,
+    y1: 14,
+    x2: 46,
+    y2: h - 16,
+    stroke: CL.grid,
+    strokeWidth: 0.8
+  }), /*#__PURE__*/React.createElement("text", {
+    x: 16,
+    y: 14,
+    fill: CL.dim,
+    fontSize: 11
+  }, "\u03B5 (eV)"), epsEV.map((e, n) => {
+    const yy = lvY(e);
+    return /*#__PURE__*/React.createElement("g", {
+      key: n
+    }, /*#__PURE__*/React.createElement("line", {
+      x1: 54,
+      y1: yy,
+      x2: 120,
+      y2: yy,
+      stroke: orbColor[n],
+      strokeWidth: 2.5
+    }), /*#__PURE__*/React.createElement("text", {
+      x: 124,
+      y: yy + 4,
+      fill: orbColor[n],
+      fontSize: 12
+    }, "\u03B5", n + 1, "=", e.toFixed(2)), occ[n] === 2 && /*#__PURE__*/React.createElement("text", {
+      x: 87,
+      y: yy - 4,
+      textAnchor: "middle",
+      fill: CL.text,
+      fontSize: 13
+    }, "\u2191\u2193"), /*#__PURE__*/React.createElement("text", {
+      x: 50,
+      y: yy - 4,
+      textAnchor: "end",
+      fill: CL.dim,
+      fontSize: 10
+    }, "f", n + 1, "=", occ[n]));
+  }), psi.map((p, n) => {
+    const slot = 1 - n;
+    const baseY = 16 + slot * halfH + halfH / 2;
+    const sy = v => baseY - v / maxPsi * (halfH / 2 - 6);
+    return /*#__PURE__*/React.createElement("g", {
+      key: n
+    }, /*#__PURE__*/React.createElement("line", {
+      x1: pX,
+      y1: baseY,
+      x2: pX + plotW,
+      y2: baseY,
+      stroke: CL.grid,
+      strokeWidth: 0.5,
+      strokeDasharray: "2,3"
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: sx(A),
+      cy: baseY,
+      r: 2.5,
+      fill: CL.dim
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: sx(B),
+      cy: baseY,
+      r: 2.5,
+      fill: CL.dim
+    }), /*#__PURE__*/React.createElement("polyline", {
+      fill: "none",
+      stroke: orbColor[n],
+      strokeWidth: 1.8,
+      points: p.map(pt => `${sx(pt.z)},${sy(pt.val)}`).join(" ")
+    }), /*#__PURE__*/React.createElement("text", {
+      x: pX + 4,
+      y: baseY - halfH / 2 + 11,
+      fill: orbColor[n],
+      fontSize: 11
+    }, n === 0 ? "ψ₊ (bonding)" : "ψ₋ (anti-bonding)"));
+  }));
+}
+function H2DFT() {
+  const [R, setR] = React.useState(1.4);
+  const [method, setMethod] = React.useState("hf");
+  const [showComp, setShowComp] = React.useState(false);
+  const [scfScale, setScfScale] = React.useState("lin");
+  const [theme, setTheme] = React.useState("light");
+  const [scfStep, setScfStep] = React.useState(0);
+  const [alpha, setAlpha] = React.useState(0.5);
+  CL = THEMES[theme]; // set active palette for this render (all sub-components read CL.*)
+
+  const scf = React.useMemo(() => runSCF(R, method, alpha), [R, method, alpha]);
+  const curve = React.useMemo(() => computeCurve(method), [method]);
+  const last = scf.history[scf.history.length - 1];
+  const d = last.decomp;
+  // convert decomposition to eV for the bar chart
+  const dEV = {
+    Ekin: d.Ekin * HA2EV,
+    Ene: d.Ene * HA2EV,
+    EJ: d.EJ * HA2EV,
+    EX: d.EX * HA2EV,
+    ExOnly: d.ExOnly * HA2EV,
+    EcOnly: d.EcOnly * HA2EV,
+    Vnn: d.Vnn * HA2EV,
+    Etot: d.Etot * HA2EV,
+    Eband: d.Eband * HA2EV,
+    doubleCount: d.doubleCount * HA2EV
+  };
+  const maxAbs = Math.max(Math.abs(dEV.Ekin), Math.abs(dEV.Ene), Math.abs(dEV.EJ), Math.abs(dEV.Vnn), Math.abs(dEV.EX || dEV.Exc)) * 1.1;
+  const Rang = R * BOHR2ANG;
+
+  // energy curve in eV/Angstrom
+  const curveEV = curve.pts.map(p => ({
+    R: p.R * BOHR2ANG,
+    E: p.E * HA2EV,
+    Ekin: p.Ekin * HA2EV,
+    Ene: p.Ene * HA2EV,
+    EJ: p.EJ * HA2EV,
+    Vnn: p.Vnn * HA2EV
+  }));
+  // marker sits ON the curve (nearest sampled R) so dot and line always agree
+  const markerPt = curveEV.reduce((best, p) => Math.abs(p.R - Rang) < Math.abs(best.R - Rang) ? p : best, curveEV[0]);
+
+  // clamp the selected SCF step to the available range for this R/method
+  const nSteps = scf.history.length;
+  const stepIdx = Math.min(scfStep, nSteps - 1);
+  const stepData = scf.history[stepIdx];
+
+  // step-dependent curves for the flowchart visualizations
+  const A = scf.A,
+    B = scf.B;
+  const zLo = Math.min(A, B) - 3.2,
+    zHi = Math.max(A, B) + 3.2,
+    NZ = 80;
+  const densCurve = Pm => {
+    const out = [];
+    for (let i = 0; i <= NZ; i++) {
+      const z = zLo + (zHi - zLo) * i / NZ;
+      const pa = evalBasis(z, 0, A),
+        pb = evalBasis(z, 0, B);
+      out.push({
+        z,
+        v: Pm[0][0] * pa * pa + 2 * Pm[0][1] * pa * pb + Pm[1][1] * pb * pb
+      });
+    }
+    return out;
+  };
+  // Hartree potential V_H(z) along axis = ∫ ρ(z')/|z−z'| ... approximated as the
+  // electrostatic potential of the (cylindrically integrated) density on-axis.
+  // Cheap 1D model: smeared Coulomb of the input density sampled along z.
+  const vHCurve = Pm => {
+    const dens = densCurve(Pm);
+    const out = [];
+    const dz = (zHi - zLo) / NZ;
+    for (let i = 0; i <= NZ; i++) {
+      const z = zLo + (zHi - zLo) * i / NZ;
+      let v = 0;
+      for (let j = 0; j <= NZ; j++) {
+        const zp = zLo + (zHi - zLo) * j / NZ;
+        const r = Math.sqrt((z - zp) * (z - zp) + 0.25); // softened to avoid singularity
+        v += dens[j].v * dz / r;
+      }
+      out.push({
+        z,
+        v
+      });
+    }
+    return out;
+  };
+  const rhoInCurve = densCurve(stepData.Pin);
+  const rhoOutCurve = densCurve(stepData.Pout || stepData.Pin);
+  const vHinCurve = vHCurve(stepData.Pin);
+  const toEV = M => M.map(r => r.map(x => x * HA2EV)); // matrix Hartree -> eV
+
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: CL.bg,
+      minHeight: "100vh",
+      color: CL.text,
+      fontFamily: "'IBM Plex Sans','SF Pro',system-ui,sans-serif",
+      padding: 16,
+      fontSize: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: 10,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      margin: "0 0 2px"
+    }
+  }, "H\u2082 in STO-3G: Self-Consistent Field Calculation"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      color: CL.dim,
+      fontSize: 14,
+      margin: "0 0 12px"
+    }
+  }, "Units: eV, \xC5ngstr\xF6m \xB7 2 contracted Gaussian basis functions \xB7 ", method === "hf" ? "Hartree-Fock" : "Kohn-Sham DFT (LDA)")), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setTheme(theme === "dark" ? "light" : "dark"),
+    style: {
+      padding: "5px 12px",
+      borderRadius: 6,
+      border: `1px solid ${CL.border}`,
+      background: CL.card,
+      color: CL.text,
+      cursor: "pointer",
+      fontSize: 15,
+      flexShrink: 0,
+      whiteSpace: "nowrap"
+    }
+  }, theme === "dark" ? "☀ Light" : "☾ Dark")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      marginBottom: 12,
+      flexWrap: "wrap"
+    }
+  }, [["hf", "Hartree-Fock"], ["lda", "DFT (LDA)"]].map(([k, lab]) => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    onClick: () => setMethod(k),
+    style: {
+      padding: "5px 14px",
+      borderRadius: 6,
+      border: `1px solid ${method === k ? CL.accent : CL.border}`,
+      background: method === k ? CL.accent + "20" : "transparent",
+      color: method === k ? CL.accent : CL.dim,
+      cursor: "pointer",
+      fontSize: 15,
+      fontWeight: method === k ? 600 : 400
+    }
+  }, lab))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.dim,
+      fontSize: 15
+    }
+  }, "R = ", Rang.toFixed(3), " \xC5 (", R.toFixed(2), " Bohr)"), /*#__PURE__*/React.createElement("input", {
+    type: "range",
+    min: 0.6,
+    max: 6,
+    step: 0.02,
+    value: R,
+    onChange: e => setR(+e.target.value),
+    style: {
+      width: "100%",
+      maxWidth: 420,
+      display: "block",
+      accentColor: CL.accent
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 14,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: CL.card,
+      borderRadius: 8,
+      border: `1px solid ${CL.border}`,
+      padding: 12,
+      flex: "2 1 320px",
+      minWidth: 280
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 4,
+      flexWrap: "wrap",
+      gap: 4
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600
+    }
+  }, "E(R) \u2014 Potential Energy Surface"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowComp(!showComp),
+    style: {
+      fontSize: 13,
+      padding: "2px 8px",
+      borderRadius: 4,
+      border: `1px solid ${CL.border}`,
+      background: showComp ? CL.accent + "20" : "transparent",
+      color: showComp ? CL.accent : CL.dim,
+      cursor: "pointer"
+    }
+  }, showComp ? "hide" : "show", " components")), /*#__PURE__*/React.createElement(MiniPlot, {
+    data: curveEV,
+    xKey: "R",
+    yKey: "E",
+    w: 400,
+    h: 210,
+    color: CL.yellow,
+    xLabel: "R (\xC5)",
+    yLabel: "E (eV)",
+    marker: {
+      x: markerPt.R,
+      y: markerPt.E
+    },
+    seriesLabels: {
+      main: "E_total",
+      Ekin: "T",
+      Ene: "V_ne",
+      EJ: "E_H",
+      Vnn: "V_nn"
+    },
+    extraLines: showComp ? [{
+      key: "Ekin",
+      color: CL.accent
+    }, {
+      key: "Ene",
+      color: CL.green
+    }, {
+      key: "EJ",
+      color: CL.orange,
+      dash: "4,3"
+    }, {
+      key: "Vnn",
+      color: CL.red,
+      dash: "4,3"
+    }] : null
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: CL.dim,
+      marginTop: 4,
+      lineHeight: 1.6
+    }
+  }, "R_eq = ", (curve.Req * BOHR2ANG).toFixed(3), " \xC5 (", curve.Req.toFixed(2), " Bohr) \xB7 D_e = ", (curve.De * HA2EV).toFixed(2), " eV", showComp && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.accent
+    }
+  }, "\u2501"), " T \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.green
+    }
+  }, "\u2501"), " V_ne \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.orange
+    }
+  }, "\u254C"), " E_H \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.red
+    }
+  }, "\u254C"), " V_nn \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.yellow
+    }
+  }, "\u2501"), " E_total"), /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.yellow,
+      fontSize: 13
+    }
+  }, "Experiment: R = 0.74 \xC5, D_e = 4.75 eV")), R > 2.5 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8,
+      padding: 8,
+      background: CL.red + "10",
+      border: `1px solid ${CL.red}30`,
+      borderRadius: 6,
+      fontSize: 14,
+      lineHeight: 1.6
+    }
+  }, /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: CL.red
+    }
+  }, "\u26A0 Dissociation problem"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.dim
+    }
+  }, " (R = ", Rang.toFixed(2), " \xC5): "), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.text
+    }
+  }, "The bump in E(R) is a well-known artifact of restricted ", method === "hf" ? "Hartree-Fock" : "KS-DFT", ". Both electrons are forced into the same spatial orbital \u03C8\u208A = (\u03C6_A+\u03C6_B)/N, giving the two-electron wavefunction equal weight of covalent (H\xB7  \xB7H) and ionic (H\u207B H\u207A) configurations. At large R, the correct dissociation is purely covalent, but the forced 50% ionic admixture adds unphysical Coulomb repulsion \u2014 pushing E(R) above the true 2\xD7E(H) limit.", method === "hf" ? " This is exactly the correlation energy that HF misses (Sec. 2.6). Fixing it requires unrestricted HF or multiconfigurational methods (CI, CASSCF)." : " LDA partially corrects this through the correlation functional, but the self-interaction error in LDA introduces its own artifacts at dissociation."))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: CL.card,
+      borderRadius: 8,
+      border: `1px solid ${CL.border}`,
+      padding: 12,
+      flex: "1 1 220px",
+      minWidth: 200
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      marginBottom: 4
+    }
+  }, "\u03C1(z) along bond axis"), /*#__PURE__*/React.createElement(MiniPlot, {
+    data: scf.density.map(p => ({
+      z: p.z * BOHR2ANG,
+      rho: p.rho
+    })),
+    xKey: "z",
+    yKey: "rho",
+    w: 260,
+    h: 160,
+    color: CL.green,
+    xLabel: "z (\xC5)",
+    yLabel: "\u03C1"
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      marginTop: 4
+    }
+  }, R < 2.0 ? "Shared electron density between nuclei → covalent bond" : R < 3.5 ? "Density still delocalized — restricted orbital forces equal sharing even as bond stretches" : "Two separate atomic peaks. In restricted HF/KS, the orbital ψ₊=(φ_A+φ_B)/N still delocalizes — this is why the ionic contamination persists."))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 14,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: CL.card,
+      borderRadius: 8,
+      border: `1px solid ${CL.border}`,
+      padding: 12,
+      flex: "1 1 340px",
+      minWidth: 320
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      marginBottom: 8
+    }
+  }, "Energy Decomposition at R = ", Rang.toFixed(3), " \xC5 ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.dim,
+      fontWeight: 400,
+      fontSize: 14
+    }
+  }, "(eV)")), /*#__PURE__*/React.createElement(EnergyBar, {
+    label: "T",
+    value: dEV.Ekin,
+    maxAbs: maxAbs,
+    color: CL.accent
+  }), /*#__PURE__*/React.createElement(EnergyBar, {
+    label: "V_ne",
+    value: dEV.Ene,
+    maxAbs: maxAbs,
+    color: CL.green
+  }), /*#__PURE__*/React.createElement(EnergyBar, {
+    label: "E_H",
+    value: dEV.EJ,
+    maxAbs: maxAbs,
+    color: CL.orange
+  }), method === "hf" ? /*#__PURE__*/React.createElement(EnergyBar, {
+    label: "E_X",
+    value: dEV.EX,
+    maxAbs: maxAbs,
+    color: CL.purple
+  }) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(EnergyBar, {
+    label: "E_X",
+    value: dEV.ExOnly,
+    maxAbs: maxAbs,
+    color: CL.purple
+  }), /*#__PURE__*/React.createElement(EnergyBar, {
+    label: "E_C",
+    value: dEV.EcOnly,
+    maxAbs: maxAbs,
+    color: CL.cyan
+  })), /*#__PURE__*/React.createElement(EnergyBar, {
+    label: "V_nn",
+    value: dEV.Vnn,
+    maxAbs: maxAbs,
+    color: CL.red
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderTop: `1px solid ${CL.border}`,
+      marginTop: 6,
+      paddingTop: 6
+    }
+  }, /*#__PURE__*/React.createElement(EnergyBar, {
+    label: "E_total",
+    value: dEV.Etot,
+    maxAbs: maxAbs,
+    color: CL.yellow
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 10,
+      fontSize: 14,
+      color: CL.dim,
+      lineHeight: 1.8,
+      borderTop: `1px solid ${CL.border}`,
+      paddingTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "monospace",
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.accent
+    }
+  }, "T"), " + ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.green
+    }
+  }, "V_ne"), " + ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.orange
+    }
+  }, "E_H"), " + ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.purple
+    }
+  }, "E_", method === "hf" ? "X" : "X" + "+E_C"), " + ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.red
+    }
+  }, "V_nn"), " = ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.yellow
+    }
+  }, "E_total")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.text
+    }
+  }, "E_band"), " = \u03A3f_n\u03B5_n = ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontFamily: "monospace"
+    }
+  }, dEV.Eband.toFixed(3), " eV")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.text
+    }
+  }, "Double counting"), " = ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontFamily: "monospace"
+    }
+  }, dEV.doubleCount.toFixed(3), " eV")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      marginTop: 2
+    }
+  }, "E_total = E_band \u2212 dc + V_nn = ", dEV.Etot.toFixed(2), " eV"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: CL.card,
+      borderRadius: 8,
+      border: `1px solid ${CL.border}`,
+      padding: 12,
+      flex: "1 1 200px",
+      minWidth: 190
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      marginBottom: 8
+    }
+  }, "Orbitals & Matrices"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 14,
+      marginBottom: 8,
+      fontSize: 15,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.dim
+    }
+  }, "\u03B5\u2081 = "), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.green,
+      fontFamily: "monospace"
+    }
+  }, (last.eps[0] * HA2EV).toFixed(2), " eV")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.dim
+    }
+  }, "\u03B5\u2082 = "), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.red,
+      fontFamily: "monospace"
+    }
+  }, (last.eps[1] * HA2EV).toFixed(2), " eV"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: CL.dim,
+      marginBottom: 8
+    }
+  }, "SCF converged in ", scf.history.length, " iterations"), /*#__PURE__*/React.createElement(Mat, {
+    m: scf.S,
+    label: "S (overlap, dimensionless)"
+  }), /*#__PURE__*/React.createElement(Mat, {
+    m: scf.h,
+    label: "h = T + V_ne (Hartree a.u.)"
+  }), /*#__PURE__*/React.createElement(Mat, {
+    m: scf.P,
+    label: "P (density matrix)"
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: CL.card,
+      borderRadius: 8,
+      border: `1px solid ${CL.border}`,
+      padding: 12,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 14,
+      marginBottom: 10,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      color: CL.dim,
+      whiteSpace: "nowrap"
+    }
+  }, "SCF step: ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: CL.text
+    }
+  }, stepIdx), " / ", nSteps - 1), /*#__PURE__*/React.createElement("input", {
+    type: "range",
+    min: 0,
+    max: nSteps - 1,
+    step: 1,
+    value: stepIdx,
+    onChange: e => setScfStep(+e.target.value),
+    style: {
+      flex: "1 1 220px",
+      maxWidth: 340,
+      accentColor: CL.accent
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 4
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setScfStep(0),
+    style: {
+      fontSize: 12,
+      padding: "3px 10px",
+      borderRadius: 4,
+      border: `1px solid ${CL.border}`,
+      background: "transparent",
+      color: CL.dim,
+      cursor: "pointer"
+    }
+  }, "first"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setScfStep(nSteps - 1),
+    style: {
+      fontSize: 12,
+      padding: "3px 10px",
+      borderRadius: 4,
+      border: `1px solid ${CL.border}`,
+      background: "transparent",
+      color: CL.dim,
+      cursor: "pointer"
+    }
+  }, "converged")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      color: CL.dim,
+      whiteSpace: "nowrap"
+    }
+  }, "mixing \u03B1 = ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: CL.text
+    }
+  }, alpha.toFixed(2))), /*#__PURE__*/React.createElement("input", {
+    type: "range",
+    min: 0.05,
+    max: 1,
+    step: 0.05,
+    value: alpha,
+    onChange: e => setAlpha(+e.target.value),
+    style: {
+      width: 120,
+      accentColor: CL.accent
+    }
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, method === "hf" ? "Hartree-Fock SCF scheme" : "Kohn-Sham DFT (LDA) SCF scheme"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      marginBottom: 10
+    }
+  }, "One full SCF iteration, shown at step ", stepIdx, ". ", method === "hf" ? "Step 3 builds the Fock matrix with the exact exchange potential V_X (= −½K)." : "Step 3 adds the LDA exchange-correlation potential V_XC = V_X + V_C on a grid.", " ", "Everything else is identical between the methods."), (() => {
+    const stepBox = (n, title, sub, fill, stroke) => /*#__PURE__*/React.createElement("div", {
+      style: {
+        minWidth: 230,
+        maxWidth: 260,
+        background: fill || CL.bg,
+        border: `1.5px solid ${stroke || CL.border}`,
+        borderRadius: 8,
+        padding: "8px 11px",
+        flexShrink: 0
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 14,
+        fontWeight: 600,
+        color: CL.text
+      }
+    }, title), sub && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: CL.dim,
+        marginTop: 2
+      }
+    }, sub));
+    const downArrow = label => /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        margin: "2px 0 2px 100px"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 18,
+        color: CL.dim
+      }
+    }, "\u2193"), label && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 12,
+        color: CL.dim
+      }
+    }, label));
+    const row = (box, viz) => /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 18,
+        flexWrap: "wrap",
+        marginBottom: 2
+      }
+    }, box, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: "1 1 260px",
+        minWidth: 240
+      }
+    }, viz));
+    return /*#__PURE__*/React.createElement("div", null, row(stepBox(1, "1. Initial guess for ρ", `step ${stepIdx}: input density ρ_in`), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(MiniCurve, {
+      pts: rhoInCurve,
+      w: 300,
+      h: 90,
+      color: CL.cyan,
+      fill: true,
+      label: "\u03C1_in(z)",
+      A: A,
+      B: B,
+      zMin: zLo,
+      zMax: zHi
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: CL.dim
+      }
+    }, stepIdx === 0 ? "Strongly lopsided guess (charge on atom A)." : "Density carried in from the previous iteration."))), downArrow(), row(stepBox(2, "2. Build Hartree potential", "V_H[ρ] — Coulomb repulsion from ρ"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(MiniCurve, {
+      pts: vHinCurve,
+      w: 300,
+      h: 90,
+      color: CL.orange,
+      fill: true,
+      label: "V_H(z)",
+      A: A,
+      B: B,
+      zMin: zLo,
+      zMax: zHi
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: CL.dim
+      }
+    }, "Electrostatic potential of \u03C1_in \u2014 large where the density piles up."))), downArrow(), row(stepBox(3, method === "hf" ? "3. Add exchange potential V_X" : "3. Add V_XC[ρ] (LDA)", method === "hf" ? "F = h + V_H + V_X" : "F = h + V_H + V_X + V_C", method === "hf" ? CL.purple + "18" : CL.cyan + "18", method === "hf" ? CL.purple : CL.cyan), /*#__PURE__*/React.createElement("div", {
+      style: {
+        overflowX: "auto"
+      }
+    }, /*#__PURE__*/React.createElement(MatrixSum, {
+      terms: method === "hf" ? [{
+        label: "h",
+        sublabel: "core T+V_ne",
+        m: toEV(scf.h),
+        sign: "",
+        color: CL.accent
+      }, {
+        label: "V_H",
+        sublabel: "Hartree",
+        m: toEV(stepData.Jm),
+        sign: "+",
+        color: CL.orange
+      }, {
+        label: "V_X",
+        sublabel: "exact exch. (−½K)",
+        m: toEV(stepData.VXm),
+        sign: "+",
+        color: CL.purple
+      }] : [{
+        label: "h",
+        sublabel: "core T+V_ne",
+        m: toEV(scf.h),
+        sign: "",
+        color: CL.accent
+      }, {
+        label: "V_H",
+        sublabel: "Hartree",
+        m: toEV(stepData.Jm),
+        sign: "+",
+        color: CL.orange
+      }, {
+        label: "V_X",
+        sublabel: "LDA exch.",
+        m: toEV(stepData.VXm),
+        sign: "+",
+        color: CL.purple
+      }, {
+        label: "V_C",
+        sublabel: "LDA corr.",
+        m: toEV(stepData.VCm),
+        sign: "+",
+        color: CL.cyan
+      }],
+      result: toEV(stepData.Fm),
+      resultLabel: "F"
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: CL.dim,
+        marginTop: 4
+      }
+    }, "2\xD72 matrices (eV). Red = negative (stabilizing). Off-diagonals = bond coupling."))), downArrow(), row(stepBox(4, "4. Solve  F C = S C ε", "generalized eigenvalue problem"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        overflowX: "auto",
+        marginBottom: 6
+      }
+    }, /*#__PURE__*/React.createElement(EigenEquation, {
+      F: stepData.Fm,
+      S: scf.S,
+      C: stepData.C,
+      eps: stepData.eps
+    })), /*#__PURE__*/React.createElement(EigenSolutionView, {
+      step: stepData,
+      A: A,
+      B: B,
+      w: 320,
+      h: 150
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: CL.dim,
+        lineHeight: 1.5
+      }
+    }, "C is 2\xD72: each ", /*#__PURE__*/React.createElement("b", null, "column"), " is one molecular orbital (col 1 = \u03C8\u208A, col 2 = \u03C8\u208B), giving its weights on \u03C6_A, \u03C6_B. \u03B5 is diagonal, holding the two orbital energies. The 2 electrons fill the lowest orbital (f\u2081=2, f\u2082=0)."))), downArrow("ρ = Σ fₙ|ψₙ|²"), row(stepBox(5, "5. New density  ρ_out", "ρ = Σ fₙ |ψₙ|²  (occupy lowest)"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(MiniCurve, {
+      pts: rhoOutCurve,
+      w: 300,
+      h: 90,
+      color: CL.green,
+      fill: true,
+      label: "\u03C1_out(z)",
+      A: A,
+      B: B,
+      zMin: zLo,
+      zMax: zHi
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: CL.dim
+      }
+    }, stepIdx === nSteps - 1 ? "Converged: symmetric, equal sharing — the bond." : "Output density; differs from ρ_in until converged."))), downArrow("mix: αρ_out+(1−α)ρ_in"), row(stepBox(6, "6. Converged? |Δρ| < tol", `|ΔP| = ${stepData.dP.toExponential(2)} — ${stepData.dP < 1e-5 ? "converged ✓" : "not yet → loop to step 2"}`, CL.yellow + "14", CL.yellow), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: CL.dim
+      }
+    }, stepData.dP < 1e-5 ? "Self-consistency reached: ρ_out matches ρ_in. The orbitals no longer change." : "ρ_out ≠ ρ_in, so mix and return to step 2 with the new density. Step through the slider to watch ρ_in and ρ_out converge.")));
+  })()), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: CL.card,
+      borderRadius: 8,
+      border: `1px solid ${CL.border}`,
+      padding: 12,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, "Total energy at step ", stepIdx, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.dim,
+      fontWeight: 400,
+      fontSize: 13
+    }
+  }, " (R = ", Rang.toFixed(3), " \xC5, eV)")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      marginBottom: 10,
+      lineHeight: 1.6
+    }
+  }, "Once the orbitals (step 4) and density (step 5) are known, the total energy is assembled from the individual contributions: kinetic T, electron-nucleus attraction V_ne, Hartree repulsion E_H,", method === "hf" ? " exact exchange E_X," : " exchange-correlation E_X + E_C,", " and the nuclear repulsion V_nn.", " ", method === "hf" ? "E = T + V_ne + E_H + E_X + V_nn." : "E = T + V_ne + E_H + E_X + E_C + V_nn."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      overflowX: "auto"
+    }
+  }, /*#__PURE__*/React.createElement(EnergySum, {
+    terms: method === "hf" ? [{
+      label: "T",
+      value: stepData.decomp.Ekin * HA2EV,
+      color: CL.accent,
+      sub: "kinetic"
+    }, {
+      label: "V_ne",
+      value: stepData.decomp.Ene * HA2EV,
+      color: CL.green,
+      sub: "e–nucleus"
+    }, {
+      label: "E_H",
+      value: stepData.decomp.EJ * HA2EV,
+      color: CL.orange,
+      sub: "Hartree"
+    }, {
+      label: "E_X",
+      value: stepData.decomp.EX * HA2EV,
+      color: CL.purple,
+      sub: "exchange"
+    }, {
+      label: "V_nn",
+      value: stepData.decomp.Vnn * HA2EV,
+      color: CL.red,
+      sub: "n–nucleus"
+    }] : [{
+      label: "T",
+      value: stepData.decomp.Ekin * HA2EV,
+      color: CL.accent,
+      sub: "kinetic"
+    }, {
+      label: "V_ne",
+      value: stepData.decomp.Ene * HA2EV,
+      color: CL.green,
+      sub: "e–nucleus"
+    }, {
+      label: "E_H",
+      value: stepData.decomp.EJ * HA2EV,
+      color: CL.orange,
+      sub: "Hartree"
+    }, {
+      label: "E_X",
+      value: stepData.decomp.ExOnly * HA2EV,
+      color: CL.purple,
+      sub: "LDA exch."
+    }, {
+      label: "E_C",
+      value: stepData.decomp.EcOnly * HA2EV,
+      color: CL.cyan,
+      sub: "LDA corr."
+    }, {
+      label: "V_nn",
+      value: stepData.decomp.Vnn * HA2EV,
+      color: CL.red,
+      sub: "n–nucleus"
+    }],
+    total: stepData.decomp.Etot * HA2EV
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: CL.dim,
+      marginTop: 8,
+      lineHeight: 1.6
+    }
+  }, "Note V_ne (large negative) is the main binding term; T, E_H and V_nn are positive (destabilizing); exchange", method === "hf" ? "" : " and correlation", " ", method === "hf" ? "is" : "are", " negative.", stepIdx === nSteps - 1 ? " At convergence this is the final SCF energy — one point on the E(R) curve above." : " This value is still changing because the density is not yet self-consistent — watch it settle as you step forward."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderTop: `1px solid ${CL.border}`,
+      marginTop: 12,
+      paddingTop: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, "Equivalent route via the band energy"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      marginBottom: 10,
+      lineHeight: 1.6
+    }
+  }, "Summing the occupied orbital energies gives the ", /*#__PURE__*/React.createElement("b", null, "band energy"), " E_band = \u03A3 f\u2099 \u03B5\u2099 = 2\u03B5\u2081. But each \u03B5\u2099 already contains the electron's full interaction with the electron cloud (V_H ", method === "hf" ? "+ V_X" : "+ V_XC", "), so the sum counts every electron-electron interaction ", /*#__PURE__*/React.createElement("b", null, "twice"), ". Subtracting the", /*#__PURE__*/React.createElement("b", null, " double-counting"), " term and adding the nuclear repulsion recovers the same total:", "  ", "E_total = E_band \u2212 E_dc + V_nn."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      overflowX: "auto"
+    }
+  }, /*#__PURE__*/React.createElement(EnergySum, {
+    terms: [{
+      label: "E_band",
+      value: stepData.decomp.Eband * HA2EV,
+      color: CL.green,
+      sub: "2ε₁ (Σfₙεₙ)"
+    }, {
+      label: "−E_dc",
+      value: -stepData.decomp.doubleCount * HA2EV,
+      color: CL.purple,
+      sub: "undo double count"
+    }, {
+      label: "V_nn",
+      value: stepData.decomp.Vnn * HA2EV,
+      color: CL.red,
+      sub: "n–nucleus"
+    }],
+    total: stepData.decomp.Etot * HA2EV
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: CL.dim,
+      marginTop: 8,
+      lineHeight: 1.6
+    }
+  }, "Here E_band = ", (stepData.decomp.Eband * HA2EV).toFixed(2), " eV (= 2 \xD7 \u03B5\u2081 = 2 \xD7 ", (stepData.eps[0] * HA2EV).toFixed(2), " eV) and the double-counting correction E_dc = ", (stepData.decomp.doubleCount * HA2EV).toFixed(2), " eV removes the interaction energy that was counted twice in the orbital energies. The two routes \u2014 the direct sum above and this band-energy route \u2014 give the identical E_total, which is exactly why a careful energy expression matters in ", method === "hf" ? "Hartree-Fock" : "Kohn-Sham DFT", "."))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      marginBottom: 8,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600
+    }
+  }, "SCF convergence at R = ", Rang.toFixed(3), " \xC5"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 4
+    }
+  }, [["lin", "linear"], ["log", "log"]].map(([k, lab]) => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    onClick: () => setScfScale(k),
+    style: {
+      fontSize: 13,
+      padding: "3px 12px",
+      borderRadius: 4,
+      border: `1px solid ${scfScale === k ? CL.accent : CL.border}`,
+      background: scfScale === k ? CL.accent + "20" : "transparent",
+      color: scfScale === k ? CL.accent : CL.dim,
+      cursor: "pointer"
+    }
+  }, lab)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      marginBottom: 8,
+      marginTop: -2
+    }
+  }, scfScale === "lin" ? "Raw values vs iteration." : "|value − converged| on log₁₀ axis — straight line ⇒ geometric convergence."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 14,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: CL.card,
+      borderRadius: 8,
+      border: `1px solid ${CL.border}`,
+      padding: 12,
+      flex: "1 1 260px",
+      minWidth: 240
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, "E_total convergence"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      marginBottom: 4
+    }
+  }, "Each iteration rebuilds the ", method === "hf" ? "Fock" : "Kohn-Sham", " matrix from the current density"), /*#__PURE__*/React.createElement(ConvergencePlot, {
+    history: scf.history,
+    w: 320,
+    h: 190,
+    yLabel: "E_total (eV)",
+    scale: scfScale,
+    seriesLabels: ["E_total"],
+    series: [{
+      get: h => h.Etot * HA2EV,
+      color: CL.yellow
+    }]
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      marginTop: 2
+    }
+  }, "Final: E_total = ", (last.Etot * HA2EV).toFixed(3), " eV after ", scf.history.length, " iterations"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: CL.card,
+      borderRadius: 8,
+      border: `1px solid ${CL.border}`,
+      padding: 12,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, "Energy components during SCF ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.dim,
+      fontWeight: 400,
+      fontSize: 14
+    }
+  }, "(eV)")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      marginBottom: 4
+    }
+  }, "Watch how kinetic, nuclear-attraction and Hartree terms settle as the density becomes self-consistent"), /*#__PURE__*/React.createElement(ConvergencePlot, {
+    history: scf.history,
+    w: 620,
+    h: 210,
+    yLabel: "E (eV)",
+    scale: scfScale,
+    seriesLabels: ["T", "V_ne", "E_H", method === "hf" ? "E_X" : "E_XC", "E_total"],
+    series: [{
+      get: h => h.Ekin * HA2EV,
+      color: CL.accent
+    }, {
+      get: h => h.Ene * HA2EV,
+      color: CL.green
+    }, {
+      get: h => h.EJ * HA2EV,
+      color: CL.orange
+    }, {
+      get: h => h.Exc * HA2EV,
+      color: CL.purple
+    }, {
+      get: h => h.Etot * HA2EV,
+      color: CL.yellow
+    }]
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      marginTop: 2
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.accent
+    }
+  }, "\u2501"), " T \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.green
+    }
+  }, "\u2501"), " V_ne \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.orange
+    }
+  }, "\u2501"), " E_H \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.purple
+    }
+  }, "\u2501"), " E_", method === "hf" ? "X" : "XC", " \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.yellow
+    }
+  }, "\u2501"), " E_total"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: CL.dim,
+      marginTop: 14,
+      marginBottom: 6,
+      borderTop: `1px solid ${CL.border}`,
+      paddingTop: 10
+    }
+  }, "Per-orbital quantities vs SCF iteration (orbital 1 = ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.green
+    }
+  }, "\u03C8\u208A"), ", orbital 2 = ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.red
+    }
+  }, "\u03C8\u208B"), "). These are expectation values \u27E8\u03C8_n|\xD4|\u03C8_n\u27E9 for each Kohn-Sham/HF orbital."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 280px",
+      minWidth: 240
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, "Eigenvalues \u03B5\u2081, \u03B5\u2082"), /*#__PURE__*/React.createElement(ConvergencePlot, {
+    history: scf.history,
+    w: 300,
+    h: 170,
+    yLabel: "\u03B5 (eV)",
+    scale: scfScale,
+    seriesLabels: ["ε₁ (bonding)", "ε₂ (anti-bonding)"],
+    series: [{
+      get: h => h.eps[0] * HA2EV,
+      color: CL.green
+    }, {
+      get: h => h.eps[1] * HA2EV,
+      color: CL.red
+    }]
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      marginTop: 1
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.green
+    }
+  }, "\u2501"), " \u03B5\u2081 (bonding) \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.red
+    }
+  }, "\u2501"), " \u03B5\u2082 (anti-bonding)")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 280px",
+      minWidth: 240
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, "Kinetic energy \u27E8\u03C8_n|T\u0302|\u03C8_n\u27E9"), /*#__PURE__*/React.createElement(ConvergencePlot, {
+    history: scf.history,
+    w: 300,
+    h: 170,
+    yLabel: "T (eV)",
+    scale: scfScale,
+    seriesLabels: ["ψ₁", "ψ₂"],
+    series: [{
+      get: h => h.Ts[0] * HA2EV,
+      color: CL.green
+    }, {
+      get: h => h.Ts[1] * HA2EV,
+      color: CL.red
+    }]
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      marginTop: 1
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.green
+    }
+  }, "\u2501"), " \u03C8\u2081 \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.red
+    }
+  }, "\u2501"), " \u03C8\u2082")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 280px",
+      minWidth: 240
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, "Hartree \u27E8\u03C8_n|V\u0302_H|\u03C8_n\u27E9"), /*#__PURE__*/React.createElement(ConvergencePlot, {
+    history: scf.history,
+    w: 300,
+    h: 170,
+    yLabel: "E_H (eV)",
+    scale: scfScale,
+    seriesLabels: ["ψ₁", "ψ₂"],
+    series: [{
+      get: h => h.EHn[0] * HA2EV,
+      color: CL.green
+    }, {
+      get: h => h.EHn[1] * HA2EV,
+      color: CL.red
+    }]
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      marginTop: 1
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.green
+    }
+  }, "\u2501"), " \u03C8\u2081 \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.red
+    }
+  }, "\u2501"), " \u03C8\u2082")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 280px",
+      minWidth: 240
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, "Exchange \u27E8\u03C8_n|V\u0302_X|\u03C8_n\u27E9 ", method === "hf" ? "(exact)" : "(LDA)"), /*#__PURE__*/React.createElement(ConvergencePlot, {
+    history: scf.history,
+    w: 300,
+    h: 170,
+    yLabel: "E_X (eV)",
+    scale: scfScale,
+    seriesLabels: ["ψ₁", "ψ₂"],
+    series: [{
+      get: h => h.EXn[0] * HA2EV,
+      color: CL.green
+    }, {
+      get: h => h.EXn[1] * HA2EV,
+      color: CL.red
+    }]
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      marginTop: 1
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.green
+    }
+  }, "\u2501"), " \u03C8\u2081 \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.red
+    }
+  }, "\u2501"), " \u03C8\u2082")), method !== "hf" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 280px",
+      minWidth: 240
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, "Correlation \u27E8\u03C8_n|V\u0302_C|\u03C8_n\u27E9 (LDA)"), /*#__PURE__*/React.createElement(ConvergencePlot, {
+    history: scf.history,
+    w: 300,
+    h: 170,
+    yLabel: "E_C (eV)",
+    scale: scfScale,
+    series: [{
+      get: h => h.ECn[0] * HA2EV,
+      color: CL.green
+    }, {
+      get: h => h.ECn[1] * HA2EV,
+      color: CL.red
+    }]
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      marginTop: 1
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.green
+    }
+  }, "\u2501"), " \u03C8\u2081 \xA0", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.red
+    }
+  }, "\u2501"), " \u03C8\u2082")), method === "hf" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 280px",
+      minWidth: 240,
+      display: "flex",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      padding: 12,
+      fontStyle: "italic"
+    }
+  }, "Correlation E_C = 0 in Hartree-Fock by construction \u2014 HF includes exact exchange but no correlation. Switch to DFT (LDA) to see the correlation contribution.")))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: CL.card,
+      borderRadius: 8,
+      border: `1px solid ${CL.border}`,
+      padding: 12,
+      fontSize: 14,
+      color: CL.dim,
+      lineHeight: 1.7
+    }
+  }, /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: CL.text
+    }
+  }, "Physics:"), " ", R <= 2.0 ? method === "hf" ? "Hartree-Fock: E = T + V_ne + E_H + E_X + V_nn. Kinetic energy T is positive (destabilizing). Nuclear-electron attraction V_ne is large and negative (main binding force). Hartree (Coulomb) repulsion E_H and nuclear repulsion V_nn are positive. Exchange E_X is negative and small. The bond forms because V_ne at close range outweighs T + E_H + V_nn. No correlation — binding energy is too small." : "Kohn-Sham DFT (LDA): E = T_s + V_ne + E_H + E_XC + V_nn. Same structure as HF, but exchange is replaced by the LDA functional (Slater exchange + Wigner correlation). E_C is small but negative — it adds correlation energy that HF misses." : method === "hf" ? `At R = ${Rang.toFixed(2)} Å the molecule is dissociating. The restricted HF wavefunction Ψ = ψ₊(1)ψ₊(2) expands to ½[φ_A(1)φ_A(2) + φ_B(1)φ_B(2) + φ_A(1)φ_B(2) + φ_B(1)φ_A(2)]. The first two terms are ionic (both electrons on one atom), the last two are covalent (one electron each). At this distance, the ionic configurations cost energy but cannot be removed within restricted HF — this missing physics IS the correlation energy E_C = E_exact − E_HF discussed in Sec. 2.6.` : `At R = ${Rang.toFixed(2)} Å the molecule is dissociating. LDA includes some correlation through the local functional, but it also suffers from self-interaction error: the Hartree potential V_H contains the interaction of each electron with itself, and the LDA exchange does not cancel this exactly (unlike exact exchange in HF). Both errors contribute to the incorrect dissociation behavior.`));
+}
+
+// Export component to window for mount
+window.H2DFT = H2DFT;
+
+(function() {
+  try {
+    const rootEl = document.getElementById('root');
+    if (!rootEl) throw new Error('#root element missing');
+    const root = window.ReactDOM.createRoot(rootEl);
+    // Use detected component name
+    const Component = window.H2DFT;
+    if (!Component) throw new Error('Component "H2DFT" not found. Check console for available globals.');
+    root.render(React.createElement(Component));
+    console.log('✅ App mounted');
+  } catch (err) {
+    console.error('❌ Mount failed:', err);
+    const errDiv = document.getElementById('jsx-error') || document.body;
+    errDiv.innerHTML = '<div style="color:#f88;background:#111;padding:16px;margin:12px;border:1px solid #f44;border-radius:4px;white-space:pre-wrap;font-family:monospace;font-size:12px">' +
+      '<strong>RENDER ERROR</strong><br>' +
+      (err.stack || err.message) +
+      '</div>';
+  }
+})();
+  </script>
+</body>
+</html>
