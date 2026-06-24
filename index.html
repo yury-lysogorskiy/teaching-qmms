@@ -296,7 +296,10 @@ function runSCF(R, method, alpha = 0.5, opts = {}) {
       EcOnly = 0;
     let VXmat = [[0, 0], [0, 0]],
       VCmat = [[0, 0], [0, 0]]; // exchange / correlation potential matrices
-    if (method === "hf") {
+    if (method === "hartree") {
+      // pure Hartree: F = h + J only. No exchange, no correlation.
+      // (Self-interaction is fully present and uncancelled.)
+    } else if (method === "hf") {
       const K = [[0, 0], [0, 0]];
       for (let m = 0; m < 2; m++) for (let n = 0; n < 2; n++) {
         let k = 0;
@@ -480,23 +483,23 @@ function computeCurve(method) {
 // Total energy (HF) for an ARBITRARY closed-shell MO, used by the variational demo.
 // The MO is ψ = cA φ_A + cB φ_B, normalized; both electrons occupy it: P = 2 c cᵀ.
 // Returns E_total in Hartree. This lets us show E rises away from the SCF minimum.
-function energyFromMO(R, cA, cB) {
+function energyFromMO(R, cA, cB, method = "hf") {
   const ig = buildIntegrals(R);
   const {
     S,
     T,
     Vne,
     eri,
-    Vnn
+    Vnn,
+    A,
+    B
   } = ig;
   // normalize so that cᵀ S c = 1  (so 2 electrons in the orbital)
   const norm = Math.sqrt(cA * cA * S[0][0] + 2 * cA * cB * S[0][1] + cB * cB * S[1][1]);
   const a = cA / norm,
     b = cB / norm;
-  const C = [a, b];
   const P = [[2 * a * a, 2 * a * b], [2 * a * b, 2 * b * b]];
-  const h = [[T[0][0] + Vne[0][0], T[0][1] + Vne[0][1]], [T[1][0] + Vne[1][0], T[1][1] + Vne[1][1]]];
-  // J and K from P
+  // J from P (Hartree); K only needed for HF exchange
   const J = [[0, 0], [0, 0]],
     K = [[0, 0], [0, 0]];
   for (let m = 0; m < 2; m++) for (let n = 0; n < 2; n++) {
@@ -511,9 +514,11 @@ function energyFromMO(R, cA, cB) {
   }
   const Ekin = trace2(P, T),
     Ene = trace2(P, Vne),
-    EJ = 0.5 * trace2(P, J),
-    EX = -0.25 * trace2(P, K);
-  return Ekin + Ene + EJ + EX + Vnn;
+    EJ = 0.5 * trace2(P, J);
+  if (method === "hartree") return Ekin + Ene + EJ + Vnn; // no exchange/correlation
+  if (method === "hf") return Ekin + Ene + EJ - 0.25 * trace2(P, K) + Vnn; // + exact exchange
+  const xc = buildXCMatrix(P, A, B); // LDA: + E_XC on the grid
+  return Ekin + Ene + EJ + xc.Exc + Vnn;
 }
 
 // ============================================================
@@ -2407,7 +2412,11 @@ function H2DFT() {
   const [alpha, setAlpha] = React.useState(0.5);
   const [varMix, setVarMix] = React.useState(0.5); // variational demo: weight on φ_A vs φ_B (0.5 = symmetric)
   CL = THEMES[theme]; // set active palette for this render (all sub-components read CL.*)
-
+  const isHF = method === "hf",
+    isLDA = method === "lda",
+    isHartree = method === "hartree";
+  const methodName = isHF ? "Hartree-Fock" : isLDA ? "Kohn-Sham DFT (LDA)" : "Hartree (no exchange)";
+  const methodShort = isHF ? "HF" : isLDA ? "LDA" : "Hartree";
   const scf = React.useMemo(() => runSCF(R, method, alpha), [R, method, alpha]);
   const curve = React.useMemo(() => computeCurve(method), [method]);
   const last = scf.history[scf.history.length - 1];
@@ -2520,7 +2529,7 @@ function H2DFT() {
       fontSize: 14,
       margin: "0 0 12px"
     }
-  }, "Units: eV, \xC5ngstr\xF6m \xB7 2 contracted Gaussian basis functions \xB7 ", method === "hf" ? "Hartree-Fock" : "Kohn-Sham DFT (LDA)")), /*#__PURE__*/React.createElement("button", {
+  }, "Units: eV, \xC5ngstr\xF6m \xB7 2 contracted Gaussian basis functions \xB7 ", methodName)), /*#__PURE__*/React.createElement("button", {
     onClick: () => setTheme(theme === "dark" ? "light" : "dark"),
     style: {
       padding: "5px 12px",
@@ -2540,7 +2549,7 @@ function H2DFT() {
       marginBottom: 12,
       flexWrap: "wrap"
     }
-  }, [["hf", "Hartree-Fock"], ["lda", "DFT (LDA)"]].map(([k, lab]) => /*#__PURE__*/React.createElement("button", {
+  }, [["hartree", "Hartree"], ["hf", "Hartree-Fock"], ["lda", "DFT (LDA)"]].map(([k, lab]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setMethod(k),
     style: {
@@ -2709,7 +2718,7 @@ function H2DFT() {
     style: {
       color: CL.text
     }
-  }, "At large R the curve flattens to a dissociation limit that is ", /*#__PURE__*/React.createElement("b", null, "too high"), " \u2014 a well-known artifact of restricted ", method === "hf" ? "Hartree-Fock" : "KS-DFT", ". Both electrons are forced into the same spatial orbital \u03C8\u208A = (\u03C6_A+\u03C6_B)/N, so the two-electron wavefunction keeps equal weight of covalent (H\xB7  \xB7H) and ionic (H\u207B H\u207A) configurations. The correct dissociation is purely covalent, but the forced 50% ionic admixture adds unphysical Coulomb repulsion \u2014 raising the plateau above the true 2\xD7E(H) limit (the energy stays bound, but not bound ", /*#__PURE__*/React.createElement("i", null, "enough"), ").", method === "hf" ? " This missing physics is exactly the correlation energy HF lacks. Fixing it requires unrestricted HF or multiconfigurational methods (CI, CASSCF)." : " LDA partially corrects this through the correlation functional, but its self-interaction error introduces its own artifacts at dissociation."))), /*#__PURE__*/React.createElement("div", {
+  }, "At large R the curve flattens to a dissociation limit that is ", /*#__PURE__*/React.createElement("b", null, "too high"), " \u2014 a well-known artifact of the restricted ", methodShort, " treatment. Both electrons are forced into the same spatial orbital \u03C8\u208A = (\u03C6_A+\u03C6_B)/N, so the two-electron wavefunction keeps equal weight of covalent (H\xB7  \xB7H) and ionic (H\u207B H\u207A) configurations. The correct dissociation is purely covalent, but the forced 50% ionic admixture adds unphysical Coulomb repulsion \u2014 raising the plateau above the true 2\xD7E(H) limit (the energy stays bound, but not bound ", /*#__PURE__*/React.createElement("i", null, "enough"), ").", isHF ? " This missing physics is exactly the correlation energy HF lacks. Fixing it requires unrestricted HF or multiconfigurational methods (CI, CASSCF)." : isLDA ? " LDA partially corrects this through the correlation functional, but its self-interaction error introduces its own artifacts at dissociation." : " The pure Hartree model has neither exchange nor correlation, and additionally suffers the full self-interaction error — so it dissociates the worst of the three."))), /*#__PURE__*/React.createElement("div", {
     style: {
       background: CL.card,
       borderRadius: 8,
@@ -2785,7 +2794,7 @@ function H2DFT() {
     value: dEV.EJ,
     maxAbs: maxAbs,
     color: CL.orange
-  }), method === "hf" ? /*#__PURE__*/React.createElement(EnergyBar, {
+  }), isHartree ? null : isHF ? /*#__PURE__*/React.createElement(EnergyBar, {
     label: "E_X",
     value: dEV.EX,
     maxAbs: maxAbs,
@@ -2842,11 +2851,11 @@ function H2DFT() {
     style: {
       color: CL.orange
     }
-  }, "E_H"), " + ", /*#__PURE__*/React.createElement("span", {
+  }, "E_H"), isHartree ? "" : /*#__PURE__*/React.createElement(React.Fragment, null, " + ", /*#__PURE__*/React.createElement("span", {
     style: {
       color: CL.purple
     }
-  }, "E_", method === "hf" ? "X" : "X" + "+E_C"), " + ", /*#__PURE__*/React.createElement("span", {
+  }, "E_", isHF ? "X" : "X" + "+E_C")), " + ", /*#__PURE__*/React.createElement("span", {
     style: {
       color: CL.red
     }
@@ -3067,13 +3076,13 @@ function H2DFT() {
       fontWeight: 600,
       marginBottom: 2
     }
-  }, method === "hf" ? "Hartree-Fock SCF scheme" : "Kohn-Sham DFT (LDA) SCF scheme"), /*#__PURE__*/React.createElement("div", {
+  }, isHF ? "Hartree-Fock SCF scheme" : isLDA ? "Kohn-Sham DFT (LDA) SCF scheme" : "Hartree SCF scheme (no exchange)"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       color: CL.dim,
       marginBottom: 10
     }
-  }, "One full SCF iteration, shown at step ", stepIdx, ". ", method === "hf" ? "Step 3 builds the Fock matrix with the exact exchange potential V_X (= −½K)." : "Step 3 adds the LDA exchange-correlation potential V_XC = V_X + V_C on a grid.", " ", "Everything else is identical between the methods."), (() => {
+  }, "One full SCF iteration, shown at step ", stepIdx, ". ", isHF ? "Step 3 builds the Fock matrix with the exact exchange potential V_X (= −½K)." : isLDA ? "Step 3 adds the LDA exchange-correlation potential V_XC = V_X + V_C on a grid." : "Step 3 uses only the Hartree potential — no exchange or correlation at all: F = h + V_H.", " ", "Everything else is identical between the methods."), (() => {
     const stepBox = (n, title, sub, fill, stroke) => /*#__PURE__*/React.createElement("div", {
       style: {
         minWidth: 230,
@@ -3161,12 +3170,24 @@ function H2DFT() {
         fontSize: 11,
         color: CL.dim
       }
-    }, "Electrostatic potential of \u03C1_in \u2014 large where the density piles up."))), downArrow(), row(stepBox(3, method === "hf" ? "3. Add exchange potential V_X" : "3. Add V_XC[ρ] (LDA)", method === "hf" ? "F = h + V_H + V_X" : "F = h + V_H + V_X + V_C", method === "hf" ? CL.purple + "18" : CL.cyan + "18", method === "hf" ? CL.purple : CL.cyan), /*#__PURE__*/React.createElement("div", {
+    }, "Electrostatic potential of \u03C1_in \u2014 large where the density piles up."))), downArrow(), row(stepBox(3, isHF ? "3. Add exchange potential V_X" : isLDA ? "3. Add V_XC[ρ] (LDA)" : "3. Hartree only (no exchange)", isHF ? "F = h + V_H + V_X" : isLDA ? "F = h + V_H + V_X + V_C" : "F = h + V_H", isHartree ? CL.orange + "18" : isHF ? CL.purple + "18" : CL.cyan + "18", isHartree ? CL.orange : isHF ? CL.purple : CL.cyan), /*#__PURE__*/React.createElement("div", {
       style: {
         overflowX: "auto"
       }
     }, /*#__PURE__*/React.createElement(MatrixSum, {
-      terms: method === "hf" ? [{
+      terms: isHartree ? [{
+        label: "h",
+        sublabel: "core T+V_ne",
+        m: toEV(scf.h),
+        sign: "",
+        color: CL.accent
+      }, {
+        label: "V_H",
+        sublabel: "Hartree (only)",
+        m: toEV(stepData.Jm),
+        sign: "+",
+        color: CL.orange
+      }] : isHF ? [{
         label: "h",
         sublabel: "core T+V_ne",
         m: toEV(scf.h),
@@ -3217,7 +3238,7 @@ function H2DFT() {
         color: CL.dim,
         marginTop: 4
       }
-    }, "2\xD72 matrices (eV). Red = negative (stabilizing). Off-diagonals = bond coupling. ", /*#__PURE__*/React.createElement("b", null, "h"), " (= T + V_ne) is density-independent, so it stays fixed across all SCF steps; only the density-dependent V_H and V_", method === "hf" ? "X" : "XC", " change as you step."))), downArrow(), row(stepBox(4, "4. Solve  F C = S C ε", "generalized eigenvalue problem"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    }, "2\xD72 matrices (eV). Red = negative (stabilizing). Off-diagonals = bond coupling. ", /*#__PURE__*/React.createElement("b", null, "h"), " (= T + V_ne) is density-independent, so it stays fixed across all SCF steps; only the density-dependent ", isHartree ? "V_H changes" : isHF ? "V_H and V_X change" : "V_H and V_XC change", " as you step."))), downArrow(), row(stepBox(4, "4. Solve  F C = S C ε", "generalized eigenvalue problem"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       style: {
         overflowX: "auto",
         marginBottom: 6
@@ -3288,12 +3309,32 @@ function H2DFT() {
       marginBottom: 10,
       lineHeight: 1.6
     }
-  }, "Once the orbitals (step 4) and density (step 5) are known, the total energy is assembled from the individual contributions: kinetic T, electron-nucleus attraction V_ne, Hartree repulsion E_H,", method === "hf" ? " exact exchange E_X," : " exchange-correlation E_X + E_C,", " and the nuclear repulsion V_nn.", " ", method === "hf" ? "E = T + V_ne + E_H + E_X + V_nn." : "E = T + V_ne + E_H + E_X + E_C + V_nn."), /*#__PURE__*/React.createElement("div", {
+  }, "Once the orbitals (step 4) and density (step 5) are known, the total energy is assembled from the individual contributions: kinetic T, electron-nucleus attraction V_ne, Hartree repulsion E_H,", isHartree ? " (no exchange or correlation)," : isHF ? " exact exchange E_X," : " exchange-correlation E_X + E_C,", " and the nuclear repulsion V_nn.", " ", isHartree ? "E = T + V_ne + E_H + V_nn." : isHF ? "E = T + V_ne + E_H + E_X + V_nn." : "E = T + V_ne + E_H + E_X + E_C + V_nn."), /*#__PURE__*/React.createElement("div", {
     style: {
       overflowX: "auto"
     }
   }, /*#__PURE__*/React.createElement(EnergySum, {
-    terms: method === "hf" ? [{
+    terms: isHartree ? [{
+      label: "T",
+      value: stepData.decomp.Ekin * HA2EV,
+      color: CL.accent,
+      sub: "kinetic"
+    }, {
+      label: "V_ne",
+      value: stepData.decomp.Ene * HA2EV,
+      color: CL.green,
+      sub: "e–nucleus"
+    }, {
+      label: "E_H",
+      value: stepData.decomp.EJ * HA2EV,
+      color: CL.orange,
+      sub: "Hartree"
+    }, {
+      label: "V_nn",
+      value: stepData.decomp.Vnn * HA2EV,
+      color: CL.red,
+      sub: "n–nucleus"
+    }] : isHF ? [{
       label: "T",
       value: stepData.decomp.Ekin * HA2EV,
       color: CL.accent,
@@ -3357,7 +3398,7 @@ function H2DFT() {
       marginTop: 8,
       lineHeight: 1.6
     }
-  }, "Note V_ne (large negative) is the main binding term; T, E_H and V_nn are positive (destabilizing); exchange", method === "hf" ? "" : " and correlation", " ", method === "hf" ? "is" : "are", " negative.", stepIdx === nSteps - 1 ? " At convergence this is the final SCF energy — one point on the E(R) curve above." : " This value is still changing because the density is not yet self-consistent — watch it settle as you step forward."), /*#__PURE__*/React.createElement("div", {
+  }, "Note V_ne (large negative) is the main binding term; T, E_H and V_nn are positive (destabilizing)", isHartree ? ". With no exchange term, the pure Hartree energy is the least bound — the self-interaction in E_H is left uncancelled" : isHF ? "; exchange is negative" : "; exchange and correlation are negative", ".", stepIdx === nSteps - 1 ? " At convergence this is the final SCF energy — one point on the E(R) curve above." : " This value is still changing because the density is not yet self-consistent — watch it settle as you step forward."), /*#__PURE__*/React.createElement("div", {
     style: {
       borderTop: `1px solid ${CL.border}`,
       marginTop: 12,
@@ -3376,7 +3417,7 @@ function H2DFT() {
       marginBottom: 10,
       lineHeight: 1.6
     }
-  }, "Summing the occupied orbital energies gives the ", /*#__PURE__*/React.createElement("b", null, "band energy"), " E_band = \u03A3 f\u2099 \u03B5\u2099 = 2\u03B5\u2081. But each \u03B5\u2099 already contains the electron's full interaction with the electron cloud (V_H ", method === "hf" ? "+ V_X" : "+ V_XC", "), so the sum counts every electron-electron interaction ", /*#__PURE__*/React.createElement("b", null, "twice"), ". Subtracting the", /*#__PURE__*/React.createElement("b", null, " double-counting"), " term and adding the nuclear repulsion recovers the same total:", "  ", "E_total = E_band \u2212 E_dc + V_nn."), /*#__PURE__*/React.createElement("div", {
+  }, "Summing the occupied orbital energies gives the ", /*#__PURE__*/React.createElement("b", null, "band energy"), " E_band = \u03A3 f\u2099 \u03B5\u2099 = 2\u03B5\u2081. But each \u03B5\u2099 already contains the electron's full interaction with the electron cloud (V_H ", isHartree ? "" : isHF ? "+ V_X" : "+ V_XC", "), so the sum counts every electron-electron interaction ", /*#__PURE__*/React.createElement("b", null, "twice"), ". Subtracting the", /*#__PURE__*/React.createElement("b", null, " double-counting"), " term and adding the nuclear repulsion recovers the same total:", "  ", "E_total = E_band \u2212 E_dc + V_nn."), /*#__PURE__*/React.createElement("div", {
     style: {
       overflowX: "auto"
     }
@@ -3405,7 +3446,7 @@ function H2DFT() {
       marginTop: 8,
       lineHeight: 1.6
     }
-  }, "Here E_band = ", (stepData.decomp.Eband * HA2EV).toFixed(2), " eV (= 2 \xD7 \u03B5\u2081 = 2 \xD7 ", (stepData.eps[0] * HA2EV).toFixed(2), " eV) and the double-counting correction E_dc = ", (stepData.decomp.doubleCount * HA2EV).toFixed(2), " eV removes the interaction energy that was counted twice in the orbital energies. The two routes \u2014 the direct sum above and this band-energy route \u2014 give the identical E_total, which is exactly why a careful energy expression matters in ", method === "hf" ? "Hartree-Fock" : "Kohn-Sham DFT", "."))), /*#__PURE__*/React.createElement("div", {
+  }, "Here E_band = ", (stepData.decomp.Eband * HA2EV).toFixed(2), " eV (= 2 \xD7 \u03B5\u2081 = 2 \xD7 ", (stepData.eps[0] * HA2EV).toFixed(2), " eV) and the double-counting correction E_dc = ", (stepData.decomp.doubleCount * HA2EV).toFixed(2), " eV removes the interaction energy that was counted twice in the orbital energies. The two routes \u2014 the direct sum above and this band-energy route \u2014 give the identical E_total, which is exactly why a careful energy expression matters in ", methodName, "."))), /*#__PURE__*/React.createElement("div", {
     style: {
       background: CL.card,
       borderRadius: 8,
@@ -3426,7 +3467,7 @@ function H2DFT() {
       marginBottom: 8,
       lineHeight: 1.6
     }
-  }, "The atomic 1s level (an electron on one isolated H atom, feeling only its own nucleus \u2014 here ", (scf.eAtom * HA2EV).toFixed(1), " eV, close to the true \u221213.6 eV) is shown on both sides. The two atomic orbitals combine into a bonding \u03C3 orbital (\u03B5\u2081, lowered below the atomic level) and an antibonding \u03C3* orbital (\u03B5\u2082, raised above it). Both electrons occupy the bonding orbital \u2014 that stabilization is the bond.", method !== "hf" && " Note: Kohn-Sham eigenvalues are auxiliary quantities and don't carry the same orbital-energy meaning as in Hartree-Fock, so the LDA bonding level may not sit below the atomic reference — the splitting picture is cleanest in HF."), /*#__PURE__*/React.createElement(MODiagram, {
+  }, "The atomic 1s level (an electron on one isolated H atom, feeling only its own nucleus \u2014 here ", (scf.eAtom * HA2EV).toFixed(1), " eV, close to the true \u221213.6 eV) is shown on both sides. The two atomic orbitals combine into a bonding \u03C3 orbital (\u03B5\u2081) and an antibonding \u03C3* orbital (\u03B5\u2082). Both electrons occupy the bonding orbital \u2014 that stabilization is the bond.", isHartree && " Note: in pure Hartree the orbital energy εₙ includes the electron's Coulomb repulsion with the whole density — including its own charge (the self-interaction error), with no exchange to cancel it. This spurious self-repulsion pushes the Hartree bonding level above the atomic reference, so εₙ here is not a reliable bonding indicator. The splitting picture is cleanest in HF.", isLDA && " Note: the Kohn-Sham eigenvalues εₙ are auxiliary quantities, not true orbital energies, and LDA carries a residual self-interaction error (its approximate exchange doesn't fully cancel the self-repulsion in V_H). Both effects push the LDA bonding level above the atomic reference, so εₙ here is not a reliable bonding indicator — the clean splitting picture (bonding below, antibonding above the atomic 1s) appears only in HF, where exact exchange cancels the self-interaction.", isHF && " In Hartree-Fock the bonding level ε₁ sits below the atomic 1s and the antibonding ε₂ above it — the clean splitting picture, because exact exchange cancels the self-interaction."), /*#__PURE__*/React.createElement(MODiagram, {
     eps: scf.history[scf.history.length - 1].eps,
     eAtom: scf.eAtom,
     method: method,
@@ -3435,14 +3476,14 @@ function H2DFT() {
   })), (() => {
     const aMix = varMix,
       bMix = 1 - varMix; // weights on phi_A, phi_B (before normalization)
-    const eVar = energyFromMO(R, aMix, bMix) * HA2EV;
+    const eVar = energyFromMO(R, aMix, bMix, method) * HA2EV;
     // sweep a curve of E vs mixing for the plot
     const sweep = [];
     for (let i = 0; i <= 40; i++) {
       const t = i / 40;
       sweep.push({
         x: t,
-        E: energyFromMO(R, t, 1 - t) * HA2EV
+        E: energyFromMO(R, t, 1 - t, method) * HA2EV
       });
     }
     const eMinSweep = Math.min(...sweep.map(s => s.E));
@@ -3460,14 +3501,20 @@ function H2DFT() {
         fontWeight: 600,
         marginBottom: 2
       }
-    }, "The variational principle"), /*#__PURE__*/React.createElement("div", {
+    }, "The variational principle ", /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: CL.dim,
+        fontWeight: 400,
+        fontSize: 13
+      }
+    }, "(", methodShort, ")")), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 13,
         color: CL.dim,
         marginBottom: 8,
         lineHeight: 1.6
       }
-    }, "The SCF finds the orbital that ", /*#__PURE__*/React.createElement("b", null, "minimizes"), " the energy. Drag the slider to build a trial orbital \u03C8 = c_A \u03C6_A + c_B \u03C6_B with a different A/B balance and watch the energy: every choice other than the balanced (symmetric) one gives a ", /*#__PURE__*/React.createElement("b", null, "higher"), " energy. That minimum is exactly what the SCF locates."), /*#__PURE__*/React.createElement("div", {
+    }, "The SCF finds the orbital that ", /*#__PURE__*/React.createElement("b", null, "minimizes"), " the energy. Drag the slider to build a trial orbital \u03C8 = c_A \u03C6_A + c_B \u03C6_B with a different A/B balance and watch the ", methodShort, " energy: every choice other than the balanced (symmetric) one gives a ", /*#__PURE__*/React.createElement("b", null, "higher"), " energy. That minimum is exactly what the SCF locates."), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -3517,7 +3564,7 @@ function H2DFT() {
         fontSize: 14,
         marginBottom: 6
       }
-    }, "Trial energy E = ", /*#__PURE__*/React.createElement("b", {
+    }, "Trial ", methodShort, " energy E = ", /*#__PURE__*/React.createElement("b", {
       style: {
         color: eVar > eMinSweep + 0.05 ? CL.red : CL.green,
         fontFamily: "monospace"
@@ -3552,16 +3599,22 @@ function H2DFT() {
         color: CL.dim,
         marginTop: 4
       }
-    }, "The curve is the energy of the trial orbital as the A/B balance changes; the dot is your current choice. Its minimum sits at the symmetric mix (0.5/0.5) for this homonuclear molecule \u2014 the bonding orbital."));
+    }, "The curve is the ", methodShort, " energy of the trial orbital as the A/B balance changes; the dot is your current choice. Its minimum sits at the symmetric mix (0.5/0.5) for this homonuclear molecule \u2014 the bonding orbital. The minimum energy differs between methods (Hartree highest, HF/LDA lower), but it is always at the symmetric point."));
   })(), (() => {
-    const cHF = computeCurve("hf"),
+    const cHa = computeCurve("hartree"),
+      cHF = computeCurve("hf"),
       cL = computeCurve("lda");
     const merged = cHF.pts.map((p, i) => ({
       R: p.R * BOHR2ANG,
+      Hartree: cHa.pts[i].E * HA2EV,
       HF: p.E * HA2EV,
       LDA: cL.pts[i].E * HA2EV
     }));
-    // converged densities at the current R for both methods (symmetrized, full)
+    const rHa = runSCF(R, "hartree", 1.0, {
+      maxIter: 120,
+      conv: 1e-7,
+      symmetrize: true
+    });
     const rHF = runSCF(R, "hf", 1.0, {
       maxIter: 120,
       conv: 1e-7,
@@ -3588,10 +3641,12 @@ function H2DFT() {
       }
       return o;
     };
-    const dHF = dens(rHF.P, rHF.A, rHF.B),
+    const dHa = dens(rHa.P, rHa.A, rHa.B),
+      dHF = dens(rHF.P, rHF.A, rHF.B),
       dLDA = dens(rLDA.P, rLDA.A, rLDA.B);
     const densMerged = dHF.map((p, i) => ({
       z: p.z,
+      Hartree: dHa[i].rho,
       HF: p.rho,
       LDA: dLDA[i].rho
     }));
@@ -3609,14 +3664,14 @@ function H2DFT() {
         fontWeight: 600,
         marginBottom: 2
       }
-    }, "Hartree-Fock vs DFT (LDA) \u2014 same axes"), /*#__PURE__*/React.createElement("div", {
+    }, "Potential energy and electronic density \u2014 comparison"), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 13,
         color: CL.dim,
         marginBottom: 8,
         lineHeight: 1.6
       }
-    }, "Both potential energy curves on one plot. They differ only in how electron exchange/correlation is treated (exact \u2212\xBDK vs the local LDA functional). Neither reproduces the experiment exactly \u2014 HF misses correlation entirely; LDA approximates it. The gap between them is a visible measure of the correlation energy."), /*#__PURE__*/React.createElement("div", {
+    }, "All three methods on the same axes. They differ in how electron interaction is treated: Hartree (no exchange, no correlation \u2014 least bound), Hartree-Fock (exact exchange), LDA (approximate exchange + correlation). The energy curves separate clearly; the densities are nearly identical."), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexWrap: "wrap",
@@ -3644,9 +3699,13 @@ function H2DFT() {
       yLabel: "E (eV)",
       seriesLabels: {
         main: "HF",
+        Hartree: "Hartree",
         LDA: "LDA"
       },
       extraLines: [{
+        key: "Hartree",
+        color: CL.green
+      }, {
         key: "LDA",
         color: CL.orange
       }]
@@ -3656,6 +3715,10 @@ function H2DFT() {
         marginTop: 4
       }
     }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: CL.green
+      }
+    }, "\u2501"), " Hartree \xA0", /*#__PURE__*/React.createElement("span", {
       style: {
         color: CL.accent
       }
@@ -3689,9 +3752,13 @@ function H2DFT() {
       yLabel: "\u03C1",
       seriesLabels: {
         main: "HF",
+        Hartree: "Hartree",
         LDA: "LDA"
       },
       extraLines: [{
+        key: "Hartree",
+        color: CL.green
+      }, {
         key: "LDA",
         color: CL.orange
       }]
@@ -3702,24 +3769,28 @@ function H2DFT() {
       }
     }, /*#__PURE__*/React.createElement("span", {
       style: {
+        color: CL.green
+      }
+    }, "\u2501"), " Hartree \xA0", /*#__PURE__*/React.createElement("span", {
+      style: {
         color: CL.accent
       }
-    }, "\u2501"), " HF density \xA0", /*#__PURE__*/React.createElement("span", {
+    }, "\u2501"), " HF \xA0", /*#__PURE__*/React.createElement("span", {
       style: {
         color: CL.orange
       }
-    }, "\u2501"), " LDA density \xA0", /*#__PURE__*/React.createElement("span", {
+    }, "\u2501"), " LDA \xA0", /*#__PURE__*/React.createElement("span", {
       style: {
         color: CL.dim
       }
-    }, "\xB7 nearly identical here")))), /*#__PURE__*/React.createElement("div", {
+    }, "\xB7 nearly identical")))), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12,
         color: CL.dim,
         marginTop: 8,
         lineHeight: 1.6
       }
-    }, "The two densities are almost on top of each other: HF and LDA give very similar charge distributions for H\u2082 near equilibrium \u2014 the difference between the methods is mostly in the ", /*#__PURE__*/React.createElement("i", null, "energy"), " (how exchange-correlation is evaluated), not in the density itself. Drag R to compare them at other bond lengths."));
+    }, "Key lesson: the three methods give very similar ", /*#__PURE__*/React.createElement("i", null, "densities"), " but quite different ", /*#__PURE__*/React.createElement("i", null, "energies"), ". Hartree sits well above HF (the gap \u2248 the exchange energy); LDA lands near HF. The total energy is far more sensitive to the treatment of exchange-correlation than the density is."));
   })(), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -3785,7 +3856,7 @@ function H2DFT() {
       color: CL.dim,
       marginBottom: 4
     }
-  }, "Each iteration rebuilds the ", method === "hf" ? "Fock" : "Kohn-Sham", " matrix from the current density"), /*#__PURE__*/React.createElement(ConvergencePlot, {
+  }, "Each iteration rebuilds the ", isHartree ? "Hartree" : isHF ? "Fock" : "Kohn-Sham", " matrix from the current density"), /*#__PURE__*/React.createElement(ConvergencePlot, {
     history: scf.history,
     w: 320,
     h: 190,
@@ -3834,8 +3905,20 @@ function H2DFT() {
     h: 210,
     yLabel: "E (eV)",
     scale: scfScale,
-    seriesLabels: ["T", "V_ne", "E_H", method === "hf" ? "E_X" : "E_XC", "E_total"],
-    series: [{
+    seriesLabels: isHartree ? ["T", "V_ne", "E_H", "E_total"] : ["T", "V_ne", "E_H", isHF ? "E_X" : "E_XC", "E_total"],
+    series: isHartree ? [{
+      get: h => h.Ekin * HA2EV,
+      color: CL.accent
+    }, {
+      get: h => h.Ene * HA2EV,
+      color: CL.green
+    }, {
+      get: h => h.EJ * HA2EV,
+      color: CL.orange
+    }, {
+      get: h => h.Etot * HA2EV,
+      color: CL.yellow
+    }] : [{
       get: h => h.Ekin * HA2EV,
       color: CL.accent
     }, {
@@ -3868,11 +3951,11 @@ function H2DFT() {
     style: {
       color: CL.orange
     }
-  }, "\u2501"), " E_H \xA0", /*#__PURE__*/React.createElement("span", {
+  }, "\u2501"), " E_H \xA0", !isHartree && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
     style: {
       color: CL.purple
     }
-  }, "\u2501"), " E_", method === "hf" ? "X" : "XC", " \xA0", /*#__PURE__*/React.createElement("span", {
+  }, "\u2501"), " E_", isHF ? "X" : "XC", " \xA0"), /*#__PURE__*/React.createElement("span", {
     style: {
       color: CL.yellow
     }
@@ -4024,7 +4107,7 @@ function H2DFT() {
       fontWeight: 600,
       marginBottom: 2
     }
-  }, "Exchange \u27E8\u03C8_n|V\u0302_X|\u03C8_n\u27E9 ", method === "hf" ? "(exact)" : "(LDA)"), /*#__PURE__*/React.createElement(ConvergencePlot, {
+  }, "Exchange \u27E8\u03C8_n|V\u0302_X|\u03C8_n\u27E9 ", isHF ? "(exact)" : isLDA ? "(LDA)" : "(none)"), /*#__PURE__*/React.createElement(ConvergencePlot, {
     history: scf.history,
     w: 300,
     h: 170,
@@ -4051,7 +4134,11 @@ function H2DFT() {
     style: {
       color: CL.red
     }
-  }, "\u2501"), " \u03C8\u2082")), method !== "hf" && /*#__PURE__*/React.createElement("div", {
+  }, "\u2501"), " \u03C8\u2082", isHartree && /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: CL.dim
+    }
+  }, " \u2014 zero (no exchange in pure Hartree)"))), isLDA && /*#__PURE__*/React.createElement("div", {
     style: {
       flex: "1 1 280px",
       minWidth: 240
@@ -4068,6 +4155,7 @@ function H2DFT() {
     h: 170,
     yLabel: "E_C (eV)",
     scale: scfScale,
+    seriesLabels: ["ψ₁", "ψ₂"],
     series: [{
       get: h => h.ECn[0] * HA2EV,
       color: CL.green
@@ -4088,7 +4176,7 @@ function H2DFT() {
     style: {
       color: CL.red
     }
-  }, "\u2501"), " \u03C8\u2082")), method === "hf" && /*#__PURE__*/React.createElement("div", {
+  }, "\u2501"), " \u03C8\u2082")), isHF && /*#__PURE__*/React.createElement("div", {
     style: {
       flex: "1 1 280px",
       minWidth: 240,
@@ -4102,7 +4190,21 @@ function H2DFT() {
       padding: 12,
       fontStyle: "italic"
     }
-  }, "Correlation E_C = 0 in Hartree-Fock by construction \u2014 HF includes exact exchange but no correlation. Switch to DFT (LDA) to see the correlation contribution.")))), /*#__PURE__*/React.createElement("div", {
+  }, "Correlation E_C = 0 in Hartree-Fock by construction \u2014 HF includes exact exchange but no correlation. Switch to DFT (LDA) to see the correlation contribution.")), isHartree && /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 280px",
+      minWidth: 240,
+      display: "flex",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      padding: 12,
+      fontStyle: "italic"
+    }
+  }, "Pure Hartree has neither exchange nor correlation: E_X = E_C = 0. Each electron feels only the mean Coulomb field (including its own \u2014 the self-interaction error). Switch to HF to add exact exchange, or DFT (LDA) to add both.")))), /*#__PURE__*/React.createElement("div", {
     style: {
       background: CL.card,
       borderRadius: 8,
@@ -4116,7 +4218,7 @@ function H2DFT() {
     style: {
       color: CL.text
     }
-  }, "Physics:"), " ", R <= 2.0 ? method === "hf" ? "Hartree-Fock: E = T + V_ne + E_H + E_X + V_nn. Kinetic energy T is positive (destabilizing). Nuclear-electron attraction V_ne is large and negative (main binding force). Hartree (Coulomb) repulsion E_H and nuclear repulsion V_nn are positive. Exchange E_X is negative and small. The bond forms because V_ne at close range outweighs T + E_H + V_nn. No correlation — binding energy is too small." : "Kohn-Sham DFT (LDA): E = T_s + V_ne + E_H + E_XC + V_nn. Same structure as HF, but exchange is replaced by the LDA functional (Slater exchange + Wigner correlation). E_C is small but negative — it adds correlation energy that HF misses." : method === "hf" ? `At R = ${Rang.toFixed(2)} Å the molecule is dissociating. The restricted HF wavefunction Ψ = ψ₊(1)ψ₊(2) expands to ½[φ_A(1)φ_A(2) + φ_B(1)φ_B(2) + φ_A(1)φ_B(2) + φ_B(1)φ_A(2)]. The first two terms are ionic (both electrons on one atom), the last two are covalent (one electron each). At this distance, the ionic configurations cost energy but cannot be removed within restricted HF — this missing physics IS the correlation energy E_C = E_exact − E_HF discussed in Sec. 2.6.` : `At R = ${Rang.toFixed(2)} Å the molecule is dissociating. LDA includes some correlation through the local functional, but it also suffers from self-interaction error: the Hartree potential V_H contains the interaction of each electron with itself, and the LDA exchange does not cancel this exactly (unlike exact exchange in HF). Both errors contribute to the incorrect dissociation behavior.`));
+  }, "Physics:"), " ", R <= 2.0 ? isHartree ? "Pure Hartree: E = T + V_ne + E_H + V_nn. Each electron moves in the average Coulomb field of the total density — including its own charge (the self-interaction error), with no exchange or correlation to cancel it. It still binds (V_ne wins at short range) but is the least accurate of the three models. Comparing to HF shows exactly what the exchange term −½K contributes." : isHF ? "Hartree-Fock: E = T + V_ne + E_H + E_X + V_nn. Kinetic energy T is positive (destabilizing). Nuclear-electron attraction V_ne is large and negative (main binding force). Hartree (Coulomb) repulsion E_H and nuclear repulsion V_nn are positive. Exchange E_X is negative and small. The bond forms because V_ne at close range outweighs T + E_H + V_nn. No correlation — binding energy is too small." : "Kohn-Sham DFT (LDA): E = T_s + V_ne + E_H + E_XC + V_nn. Same structure as HF, but exchange is replaced by the LDA functional (Slater exchange + Wigner correlation). E_C is small but negative — it adds correlation energy that HF misses." : isHartree ? `At R = ${Rang.toFixed(2)} Å the molecule is dissociating. Pure Hartree has no exchange and no correlation, plus the full self-interaction error, so its dissociation limit is the most wrong of the three. The restricted orbital still forces an unphysical 50% ionic admixture.` : isHF ? `At R = ${Rang.toFixed(2)} Å the molecule is dissociating. The restricted HF wavefunction Ψ = ψ₊(1)ψ₊(2) expands to ½[φ_A(1)φ_A(2) + φ_B(1)φ_B(2) + φ_A(1)φ_B(2) + φ_B(1)φ_A(2)]. The first two terms are ionic (both electrons on one atom), the last two are covalent (one electron each). At this distance, the ionic configurations cost energy but cannot be removed within restricted HF — this missing physics IS the correlation energy E_C = E_exact − E_HF discussed in Sec. 2.6.` : `At R = ${Rang.toFixed(2)} Å the molecule is dissociating. LDA includes some correlation through the local functional, but it also suffers from self-interaction error: the Hartree potential V_H contains the interaction of each electron with itself, and the LDA exchange does not cancel this exactly (unlike exact exchange in HF). Both errors contribute to the incorrect dissociation behavior.`));
 }
 
 // Export component to window for mount
