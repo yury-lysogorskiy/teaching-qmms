@@ -114,6 +114,9 @@ function buildIntegrals(R) {
     S: [[S11, S12], [S12, S11]],
     T: [[T11, T12], [T12, T22]],
     Vne: [[VA11 + VB11, VA12 + VB12], [VA12 + VB12, VA22 + VB22]],
+    // isolated H-atom 1s energy: electron in φ_A feels ONLY its own nucleus A.
+    // This is the correct atomic reference for the MO diagram (T_AA + V^A_AA).
+    eAtom: T11 + VA11,
     eri: {
       '1111': contracted4(A, A, A, A),
       '2222': contracted4(B, B, B, B),
@@ -259,7 +262,8 @@ function runSCF(R, method, alpha = 0.5, opts = {}) {
     eri,
     Vnn,
     A,
-    B
+    B,
+    eAtom
   } = ig;
   const h = [[T[0][0] + Vne[0][0], T[0][1] + Vne[0][1]], [T[1][0] + Vne[1][0], T[1][1] + Vne[1][1]]];
   const X = sHalf(S),
@@ -432,7 +436,8 @@ function runSCF(R, method, alpha = 0.5, opts = {}) {
     Jfin,
     VXfin,
     VCfin,
-    Ffin
+    Ffin,
+    eAtom
   };
 }
 
@@ -470,6 +475,45 @@ function computeCurve(method) {
   };
   _curveCache[method] = result;
   return result;
+}
+
+// Total energy (HF) for an ARBITRARY closed-shell MO, used by the variational demo.
+// The MO is ψ = cA φ_A + cB φ_B, normalized; both electrons occupy it: P = 2 c cᵀ.
+// Returns E_total in Hartree. This lets us show E rises away from the SCF minimum.
+function energyFromMO(R, cA, cB) {
+  const ig = buildIntegrals(R);
+  const {
+    S,
+    T,
+    Vne,
+    eri,
+    Vnn
+  } = ig;
+  // normalize so that cᵀ S c = 1  (so 2 electrons in the orbital)
+  const norm = Math.sqrt(cA * cA * S[0][0] + 2 * cA * cB * S[0][1] + cB * cB * S[1][1]);
+  const a = cA / norm,
+    b = cB / norm;
+  const C = [a, b];
+  const P = [[2 * a * a, 2 * a * b], [2 * a * b, 2 * b * b]];
+  const h = [[T[0][0] + Vne[0][0], T[0][1] + Vne[0][1]], [T[1][0] + Vne[1][0], T[1][1] + Vne[1][1]]];
+  // J and K from P
+  const J = [[0, 0], [0, 0]],
+    K = [[0, 0], [0, 0]];
+  for (let m = 0; m < 2; m++) for (let n = 0; n < 2; n++) {
+    let j = 0,
+      k = 0;
+    for (let l = 0; l < 2; l++) for (let s = 0; s < 2; s++) {
+      j += P[l][s] * getERI(eri, m + 1, n + 1, l + 1, s + 1);
+      k += P[l][s] * getERI(eri, m + 1, l + 1, n + 1, s + 1);
+    }
+    J[m][n] = j;
+    K[m][n] = k;
+  }
+  const Ekin = trace2(P, T),
+    Ene = trace2(P, Vne),
+    EJ = 0.5 * trace2(P, J),
+    EX = -0.25 * trace2(P, K);
+  return Ekin + Ene + EJ + EX + Vnn;
 }
 
 // ============================================================
@@ -609,7 +653,7 @@ function MiniPlot({
     xMax = Math.max(...xs);
   const yMin = Math.min(...allYs),
     yMax = Math.max(...allYs);
-  const pad = 34;
+  const pad = 40;
   const sx = v => pad + (v - xMin) / (xMax - xMin || 1) * (w - 2 * pad);
   const sy = v => h - pad - (v - yMin) / (yMax - yMin || 1) * (h - 2 * pad);
   function onMove(e) {
@@ -706,11 +750,23 @@ function MiniPlot({
     fontSize: 11
   }, yMax.toFixed(2)), /*#__PURE__*/React.createElement("text", {
     x: pad - 4,
+    y: sy((yMax + yMin) / 2) + 3,
+    textAnchor: "end",
+    fill: CL.dim,
+    fontSize: 11
+  }, ((yMax + yMin) / 2).toFixed(2)), /*#__PURE__*/React.createElement("text", {
+    x: pad - 4,
     y: sy(yMin) + 3,
     textAnchor: "end",
     fill: CL.dim,
     fontSize: 11
-  }, yMin.toFixed(2)), /*#__PURE__*/React.createElement("text", {
+  }, yMin.toFixed(2)), yLabel && /*#__PURE__*/React.createElement("text", {
+    x: 11,
+    y: (h - pad) / 2 + 6,
+    fill: CL.dim,
+    fontSize: 11,
+    transform: `rotate(-90,11,${(h - pad) / 2 + 6})`
+  }, yLabel), /*#__PURE__*/React.createElement("text", {
     x: pad,
     y: h - pad + 11,
     fill: CL.dim,
@@ -1730,17 +1786,19 @@ function EigenEquation({
   eps
 }) {
   const cell = v => (v >= 0 ? "+" : "") + v.toFixed(2);
+  // know: green thick border (we have these); unknown: red thick border (solved for)
+  const KNOWN = CL.green,
+    UNKNOWN = CL.red;
   const Grid = ({
     m,
-    color,
-    colTint
+    known
   }) => /*#__PURE__*/React.createElement("div", {
     style: {
       display: "inline-grid",
       gridTemplateColumns: "1fr 1fr",
       gap: 2,
       background: CL.bg,
-      border: `1px solid ${color || CL.border}`,
+      border: `2.5px solid ${known ? KNOWN : UNKNOWN}`,
       borderRadius: 5,
       padding: "4px 5px"
     }
@@ -1752,9 +1810,7 @@ function EigenEquation({
       color: v < 0 ? CL.red : CL.text,
       textAlign: "right",
       minWidth: 50,
-      padding: "0 2px",
-      background: colTint ? i % 2 === 0 ? CL.green + "14" : CL.red + "14" : "transparent",
-      borderRadius: 2
+      padding: "0 2px"
     }
   }, cell(v))));
   // Show energies in eV: F → eV, ε → eV. C is dimensionless, S is dimensionless,
@@ -1785,7 +1841,7 @@ function EigenEquation({
       fontWeight: 600
     }
   }, s);
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -1794,22 +1850,44 @@ function EigenEquation({
     }
   }, block("F", "Fock/KS (eV)", /*#__PURE__*/React.createElement(Grid, {
     m: FeV,
-    color: CL.yellow
+    known: true
   })), op("·"), block("C", "cols = MOs", /*#__PURE__*/React.createElement(Grid, {
-    m: C,
-    color: CL.green,
-    colTint: true
+    m: C
   })), op("="), block("S", "overlap", /*#__PURE__*/React.createElement(Grid, {
     m: S,
-    color: CL.accent
+    known: true
   })), op("·"), block("C", "cols = MOs", /*#__PURE__*/React.createElement(Grid, {
-    m: C,
-    color: CL.green,
-    colTint: true
+    m: C
   })), op("·"), block("ε", "diag (eV)", /*#__PURE__*/React.createElement(Grid, {
-    m: epsDiag,
-    color: CL.purple
-  })));
+    m: epsDiag
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: CL.dim,
+      marginTop: 6,
+      display: "flex",
+      gap: 16,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "inline-block",
+      width: 14,
+      height: 0,
+      borderTop: `3px solid ${KNOWN}`,
+      verticalAlign: "middle",
+      marginRight: 4
+    }
+  }), "known (built from h, density)"), /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "inline-block",
+      width: 14,
+      height: 0,
+      borderTop: `3px solid ${UNKNOWN}`,
+      verticalAlign: "middle",
+      marginRight: 4
+    }
+  }), "unknown \u2014 solved for (orbitals C, energies \u03B5)")));
 }
 
 // Small 1D curve plot for inline React.use in the flowchart (rho(z), V_H(z), etc.)
@@ -2018,6 +2096,307 @@ function EigenSolutionView({
     }, n === 0 ? "ψ₊ (bonding)" : "ψ₋ (anti-bonding)"));
   }));
 }
+
+// MO correlation diagram: atomic 1s on both sides -> bonding/antibonding in the middle.
+function MODiagram({
+  eps,
+  eAtom,
+  method,
+  w,
+  h
+}) {
+  const e1 = eps[0] * HA2EV,
+    e2 = eps[1] * HA2EV,
+    eA = eAtom * HA2EV;
+  const all = [e1, e2, eA];
+  const eMin = Math.min(...all) - 4,
+    eMax = Math.max(...all) + 4;
+  const pad = 44,
+    top = 22,
+    bot = h - 26;
+  const Y = e => bot - (e - eMin) / (eMax - eMin) * (bot - top);
+  const xAtomL = pad + 30,
+    xMO = w / 2,
+    xAtomR = w - pad - 30,
+    levW = 44;
+  const lvl = (x, e, color, lab, labRight) => /*#__PURE__*/React.createElement("g", null, /*#__PURE__*/React.createElement("line", {
+    x1: x - levW / 2,
+    y1: Y(e),
+    x2: x + levW / 2,
+    y2: Y(e),
+    stroke: color,
+    strokeWidth: 2.5
+  }), /*#__PURE__*/React.createElement("text", {
+    x: labRight ? x + levW / 2 + 5 : x - levW / 2 - 5,
+    y: Y(e) + 4,
+    textAnchor: labRight ? "start" : "end",
+    fill: color,
+    fontSize: 12
+  }, lab));
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${w} ${h}`,
+    style: {
+      width: "100%",
+      maxWidth: w
+    }
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: pad,
+    y1: top - 6,
+    x2: pad,
+    y2: bot + 6,
+    stroke: CL.grid,
+    strokeWidth: 0.8
+  }), /*#__PURE__*/React.createElement("text", {
+    x: pad - 6,
+    y: top - 8,
+    textAnchor: "end",
+    fill: CL.dim,
+    fontSize: 12
+  }, "\u03B5 (eV)"), [0, 0.5, 1].map((f, i) => {
+    const e = eMin + f * (eMax - eMin);
+    return /*#__PURE__*/React.createElement("text", {
+      key: i,
+      x: pad - 6,
+      y: Y(e) + 4,
+      textAnchor: "end",
+      fill: CL.dim,
+      fontSize: 11
+    }, e.toFixed(0));
+  }), lvl(xAtomL, eA, CL.dim, `1s = ${eA.toFixed(1)}`), lvl(xAtomR, eA, CL.dim, `1s = ${eA.toFixed(1)}`, true), /*#__PURE__*/React.createElement("text", {
+    x: xAtomL,
+    y: bot + 18,
+    textAnchor: "middle",
+    fill: CL.dim,
+    fontSize: 12
+  }, "H_A"), /*#__PURE__*/React.createElement("text", {
+    x: xAtomR,
+    y: bot + 18,
+    textAnchor: "middle",
+    fill: CL.dim,
+    fontSize: 12
+  }, "H_B"), /*#__PURE__*/React.createElement("text", {
+    x: xMO,
+    y: bot + 18,
+    textAnchor: "middle",
+    fill: CL.text,
+    fontSize: 12
+  }, "H\u2082 MOs"), lvl(xMO, e2, CL.red, ""), lvl(xMO, e1, CL.green, ""), /*#__PURE__*/React.createElement("text", {
+    x: xMO + levW / 2 + 5,
+    y: Y(e2) + 4,
+    fill: CL.red,
+    fontSize: 12
+  }, "\u03B5\u2082 = ", e2.toFixed(1), " (\u03C3*)"), /*#__PURE__*/React.createElement("text", {
+    x: xMO + levW / 2 + 5,
+    y: Y(e1) + 4,
+    fill: CL.green,
+    fontSize: 12
+  }, "\u03B5\u2081 = ", e1.toFixed(1), " (\u03C3)"), /*#__PURE__*/React.createElement("text", {
+    x: xMO,
+    y: Y(e1) - 4,
+    textAnchor: "middle",
+    fill: CL.text,
+    fontSize: 13
+  }, "\u2191\u2193"), /*#__PURE__*/React.createElement("line", {
+    x1: xAtomL + levW / 2,
+    y1: Y(eA),
+    x2: xMO - levW / 2,
+    y2: Y(e1),
+    stroke: CL.green,
+    strokeWidth: 0.7,
+    strokeDasharray: "3,3",
+    opacity: 0.6
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: xAtomR - levW / 2,
+    y1: Y(eA),
+    x2: xMO - levW / 2,
+    y2: Y(e1),
+    stroke: CL.green,
+    strokeWidth: 0.7,
+    strokeDasharray: "3,3",
+    opacity: 0.6
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: xAtomL + levW / 2,
+    y1: Y(eA),
+    x2: xMO - levW / 2,
+    y2: Y(e2),
+    stroke: CL.red,
+    strokeWidth: 0.7,
+    strokeDasharray: "3,3",
+    opacity: 0.6
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: xAtomR - levW / 2,
+    y1: Y(eA),
+    x2: xMO - levW / 2,
+    y2: Y(e2),
+    stroke: CL.red,
+    strokeWidth: 0.7,
+    strokeDasharray: "3,3",
+    opacity: 0.6
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: xMO + 150,
+    y1: Y(e1),
+    x2: xMO + 150,
+    y2: Y(e2),
+    stroke: CL.dim,
+    strokeWidth: 1
+  }), /*#__PURE__*/React.createElement("text", {
+    x: xMO + 156,
+    y: (Y(e1) + Y(e2)) / 2 + 4,
+    fill: CL.dim,
+    fontSize: 11
+  }, "split = ", (e2 - e1).toFixed(1), " eV"));
+}
+
+// Visualizes the STO-3G basis: the 3 primitive Gaussians and their contraction,
+// plus the two contracted basis functions φ_A, φ_B placed on the nuclei at separation R.
+function BasisView({
+  A,
+  B,
+  w,
+  h
+}) {
+  const zMin = Math.min(A, B) - 3.4,
+    zMax = Math.max(A, B) + 3.4,
+    N = 160;
+  // primitives on atom A (centered at A): c_i * Nnorm(a_i) * exp(-a_i (z-A)^2)
+  const prim = (i, center) => {
+    const a = STO3G.exp[i],
+      c = STO3G.coef[i] * normPrim(a);
+    const out = [];
+    for (let k = 0; k <= N; k++) {
+      const z = zMin + (zMax - zMin) * k / N;
+      out.push({
+        z,
+        v: c * Math.exp(-a * (z - center) ** 2)
+      });
+    }
+    return out;
+  };
+  const contr = center => {
+    const out = [];
+    for (let k = 0; k <= N; k++) {
+      const z = zMin + (zMax - zMin) * k / N;
+      out.push({
+        z,
+        v: evalBasis(z, 0, center)
+      });
+    }
+    return out;
+  };
+  const primA = [prim(0, A), prim(1, A), prim(2, A)];
+  const phiA = contr(A),
+    phiB = contr(B);
+  const primColors = [CL.red, CL.orange, CL.cyan];
+  const primLabels = ["tight (α=3.43)", "medium (α=0.62)", "diffuse (α=0.17)"];
+
+  // layout: left panel = primitives→contraction on atom A; right = φ_A & φ_B on the molecule
+  const halfW = (w - 20) / 2,
+    padB = 22,
+    padT = 18;
+  const allLeft = [...primA.flat(), ...phiA].map(p => p.v);
+  const maxL = Math.max(...allLeft) || 1;
+  const maxR = Math.max(...phiA.map(p => p.v), ...phiB.map(p => p.v)) || 1;
+  const sxL = z => 8 + (z - zMin) / (zMax - zMin) * (halfW - 12);
+  const syL = v => h - padB - v / maxL * (h - padB - padT);
+  const sxR = z => halfW + 20 + (z - zMin) / (zMax - zMin) * (halfW - 28);
+  const syR = v => h - padB - v / maxR * (h - padB - padT);
+  const poly = (pts, sx, sy) => pts.map(p => `${sx(p.z)},${sy(p.v)}`).join(" ");
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${w} ${h}`,
+    style: {
+      width: "100%",
+      maxWidth: w
+    }
+  }, /*#__PURE__*/React.createElement("text", {
+    x: 8,
+    y: 12,
+    fill: CL.text,
+    fontSize: 13,
+    fontWeight: 600
+  }, "One basis function = 3 Gaussians (contraction)"), /*#__PURE__*/React.createElement("line", {
+    x1: 8,
+    y1: syL(0),
+    x2: halfW,
+    y2: syL(0),
+    stroke: CL.grid,
+    strokeWidth: 0.6
+  }), primA.map((p, i) => /*#__PURE__*/React.createElement("polyline", {
+    key: i,
+    fill: "none",
+    stroke: primColors[i],
+    strokeWidth: 1.4,
+    strokeDasharray: "4,3",
+    points: poly(p, sxL, syL)
+  })), /*#__PURE__*/React.createElement("polyline", {
+    fill: "none",
+    stroke: CL.green,
+    strokeWidth: 2.4,
+    points: poly(phiA, sxL, syL)
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: sxL(A),
+    cy: syL(0),
+    r: 2.5,
+    fill: CL.dim
+  }), primLabels.map((lab, i) => /*#__PURE__*/React.createElement("text", {
+    key: i,
+    x: 12,
+    y: padT + 12 + i * 13,
+    fill: primColors[i],
+    fontSize: 10
+  }, "\u2014 ", lab)), /*#__PURE__*/React.createElement("text", {
+    x: halfW - 4,
+    y: padT + 12,
+    textAnchor: "end",
+    fill: CL.green,
+    fontSize: 11,
+    fontWeight: 600
+  }, "\u03C6 (contracted)"), /*#__PURE__*/React.createElement("text", {
+    x: halfW + 20,
+    y: 12,
+    fill: CL.text,
+    fontSize: 13,
+    fontWeight: 600
+  }, "Two basis functions on H\u2082 (R = ", ((B - A) * BOHR2ANG).toFixed(2), " \xC5)"), /*#__PURE__*/React.createElement("line", {
+    x1: halfW + 20,
+    y1: syR(0),
+    x2: w - 8,
+    y2: syR(0),
+    stroke: CL.grid,
+    strokeWidth: 0.6
+  }), /*#__PURE__*/React.createElement("polyline", {
+    fill: "none",
+    stroke: CL.green,
+    strokeWidth: 2.2,
+    points: poly(phiA, sxR, syR)
+  }), /*#__PURE__*/React.createElement("polyline", {
+    fill: "none",
+    stroke: CL.purple,
+    strokeWidth: 2.2,
+    points: poly(phiB, sxR, syR)
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: sxR(A),
+    cy: syR(0),
+    r: 2.5,
+    fill: CL.dim
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: sxR(B),
+    cy: syR(0),
+    r: 2.5,
+    fill: CL.dim
+  }), /*#__PURE__*/React.createElement("text", {
+    x: sxR(A),
+    y: h - 8,
+    textAnchor: "middle",
+    fill: CL.green,
+    fontSize: 11
+  }, "\u03C6_A"), /*#__PURE__*/React.createElement("text", {
+    x: sxR(B),
+    y: h - 8,
+    textAnchor: "middle",
+    fill: CL.purple,
+    fontSize: 11
+  }, "\u03C6_B"));
+}
 function H2DFT() {
   const [R, setR] = React.useState(1.4);
   const [method, setMethod] = React.useState("hf");
@@ -2026,6 +2405,7 @@ function H2DFT() {
   const [theme, setTheme] = React.useState("light");
   const [scfStep, setScfStep] = React.useState(0);
   const [alpha, setAlpha] = React.useState(0.5);
+  const [varMix, setVarMix] = React.useState(0.5); // variational demo: weight on φ_A vs φ_B (0.5 = symmetric)
   CL = THEMES[theme]; // set active palette for this render (all sub-components read CL.*)
 
   const scf = React.useMemo(() => runSCF(R, method, alpha), [R, method, alpha]);
@@ -2329,7 +2709,7 @@ function H2DFT() {
     style: {
       color: CL.text
     }
-  }, "The bump in E(R) is a well-known artifact of restricted ", method === "hf" ? "Hartree-Fock" : "KS-DFT", ". Both electrons are forced into the same spatial orbital \u03C8\u208A = (\u03C6_A+\u03C6_B)/N, giving the two-electron wavefunction equal weight of covalent (H\xB7  \xB7H) and ionic (H\u207B H\u207A) configurations. At large R, the correct dissociation is purely covalent, but the forced 50% ionic admixture adds unphysical Coulomb repulsion \u2014 pushing E(R) above the true 2\xD7E(H) limit.", method === "hf" ? " This is exactly the correlation energy that HF misses (Sec. 2.6). Fixing it requires unrestricted HF or multiconfigurational methods (CI, CASSCF)." : " LDA partially corrects this through the correlation functional, but the self-interaction error in LDA introduces its own artifacts at dissociation."))), /*#__PURE__*/React.createElement("div", {
+  }, "At large R the curve flattens to a dissociation limit that is ", /*#__PURE__*/React.createElement("b", null, "too high"), " \u2014 a well-known artifact of restricted ", method === "hf" ? "Hartree-Fock" : "KS-DFT", ". Both electrons are forced into the same spatial orbital \u03C8\u208A = (\u03C6_A+\u03C6_B)/N, so the two-electron wavefunction keeps equal weight of covalent (H\xB7  \xB7H) and ionic (H\u207B H\u207A) configurations. The correct dissociation is purely covalent, but the forced 50% ionic admixture adds unphysical Coulomb repulsion \u2014 raising the plateau above the true 2\xD7E(H) limit (the energy stays bound, but not bound ", /*#__PURE__*/React.createElement("i", null, "enough"), ").", method === "hf" ? " This missing physics is exactly the correlation energy HF lacks. Fixing it requires unrestricted HF or multiconfigurational methods (CI, CASSCF)." : " LDA partially corrects this through the correlation functional, but its self-interaction error introduces its own artifacts at dissociation."))), /*#__PURE__*/React.createElement("div", {
     style: {
       background: CL.card,
       borderRadius: 8,
@@ -2557,6 +2937,39 @@ function H2DFT() {
     m: scf.P,
     label: "P (density matrix)"
   }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: CL.card,
+      borderRadius: 8,
+      border: `1px solid ${CL.border}`,
+      padding: 12,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, "The STO-3G basis set"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      marginBottom: 10,
+      lineHeight: 1.6
+    }
+  }, "Everything below is expanded in this minimal basis: one 1s function per hydrogen atom, so 2 basis functions total. Each function is a fixed contraction of 3 primitive Gaussians (STO-3G = \"Slater-type orbital approximated by 3 Gaussians\"), chosen to mimic the cusp-free shape of a 1s Slater orbital. The molecular orbitals \u03C8\u208A, \u03C8\u208B are then built as linear combinations c_A \u03C6_A + c_B \u03C6_B \u2014 those coefficients are the matrix C solved in step 4."), /*#__PURE__*/React.createElement(BasisView, {
+    A: scf.A,
+    B: scf.B,
+    w: 640,
+    h: 210
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: CL.dim,
+      marginTop: 8,
+      lineHeight: 1.6
+    }
+  }, "Left: a single basis function (green) is the weighted sum of a tight, a medium and a diffuse Gaussian (dashed) \u2014 the contraction is fixed, not optimized during the SCF. Right: the two functions \u03C6_A, \u03C6_B sit on their nuclei; their overlap (the region where both are non-zero between the atoms) is what makes bonding possible and is captured by the overlap matrix S. Because the basis is so small (2 functions), all matrices in the SCF are just 2\xD72.")), /*#__PURE__*/React.createElement("div", {
     style: {
       background: CL.card,
       borderRadius: 8,
@@ -2804,7 +3217,7 @@ function H2DFT() {
         color: CL.dim,
         marginTop: 4
       }
-    }, "2\xD72 matrices (eV). Red = negative (stabilizing). Off-diagonals = bond coupling."))), downArrow(), row(stepBox(4, "4. Solve  F C = S C ε", "generalized eigenvalue problem"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    }, "2\xD72 matrices (eV). Red = negative (stabilizing). Off-diagonals = bond coupling. ", /*#__PURE__*/React.createElement("b", null, "h"), " (= T + V_ne) is density-independent, so it stays fixed across all SCF steps; only the density-dependent V_H and V_", method === "hf" ? "X" : "XC", " change as you step."))), downArrow(), row(stepBox(4, "4. Solve  F C = S C ε", "generalized eigenvalue problem"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       style: {
         overflowX: "auto",
         marginBottom: 6
@@ -2993,6 +3406,321 @@ function H2DFT() {
       lineHeight: 1.6
     }
   }, "Here E_band = ", (stepData.decomp.Eband * HA2EV).toFixed(2), " eV (= 2 \xD7 \u03B5\u2081 = 2 \xD7 ", (stepData.eps[0] * HA2EV).toFixed(2), " eV) and the double-counting correction E_dc = ", (stepData.decomp.doubleCount * HA2EV).toFixed(2), " eV removes the interaction energy that was counted twice in the orbital energies. The two routes \u2014 the direct sum above and this band-energy route \u2014 give the identical E_total, which is exactly why a careful energy expression matters in ", method === "hf" ? "Hartree-Fock" : "Kohn-Sham DFT", "."))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: CL.card,
+      borderRadius: 8,
+      border: `1px solid ${CL.border}`,
+      padding: 12,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      marginBottom: 2
+    }
+  }, "Molecular orbital diagram"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: CL.dim,
+      marginBottom: 8,
+      lineHeight: 1.6
+    }
+  }, "The atomic 1s level (an electron on one isolated H atom, feeling only its own nucleus \u2014 here ", (scf.eAtom * HA2EV).toFixed(1), " eV, close to the true \u221213.6 eV) is shown on both sides. The two atomic orbitals combine into a bonding \u03C3 orbital (\u03B5\u2081, lowered below the atomic level) and an antibonding \u03C3* orbital (\u03B5\u2082, raised above it). Both electrons occupy the bonding orbital \u2014 that stabilization is the bond.", method !== "hf" && " Note: Kohn-Sham eigenvalues are auxiliary quantities and don't carry the same orbital-energy meaning as in Hartree-Fock, so the LDA bonding level may not sit below the atomic reference — the splitting picture is cleanest in HF."), /*#__PURE__*/React.createElement(MODiagram, {
+    eps: scf.history[scf.history.length - 1].eps,
+    eAtom: scf.eAtom,
+    method: method,
+    w: 560,
+    h: 240
+  })), (() => {
+    const aMix = varMix,
+      bMix = 1 - varMix; // weights on phi_A, phi_B (before normalization)
+    const eVar = energyFromMO(R, aMix, bMix) * HA2EV;
+    // sweep a curve of E vs mixing for the plot
+    const sweep = [];
+    for (let i = 0; i <= 40; i++) {
+      const t = i / 40;
+      sweep.push({
+        x: t,
+        E: energyFromMO(R, t, 1 - t) * HA2EV
+      });
+    }
+    const eMinSweep = Math.min(...sweep.map(s => s.E));
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        background: CL.card,
+        borderRadius: 8,
+        border: `1px solid ${CL.border}`,
+        padding: 12,
+        marginBottom: 14
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 16,
+        fontWeight: 600,
+        marginBottom: 2
+      }
+    }, "The variational principle"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: CL.dim,
+        marginBottom: 8,
+        lineHeight: 1.6
+      }
+    }, "The SCF finds the orbital that ", /*#__PURE__*/React.createElement("b", null, "minimizes"), " the energy. Drag the slider to build a trial orbital \u03C8 = c_A \u03C6_A + c_B \u03C6_B with a different A/B balance and watch the energy: every choice other than the balanced (symmetric) one gives a ", /*#__PURE__*/React.createElement("b", null, "higher"), " energy. That minimum is exactly what the SCF locates."), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        marginBottom: 6,
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 14,
+        color: CL.dim,
+        whiteSpace: "nowrap"
+      }
+    }, "weight on \u03C6_A: ", /*#__PURE__*/React.createElement("b", {
+      style: {
+        color: CL.text
+      }
+    }, varMix.toFixed(2)), " / \u03C6_B: ", /*#__PURE__*/React.createElement("b", {
+      style: {
+        color: CL.text
+      }
+    }, (1 - varMix).toFixed(2))), /*#__PURE__*/React.createElement("input", {
+      type: "range",
+      min: 0.05,
+      max: 0.95,
+      step: 0.01,
+      value: varMix,
+      onChange: e => setVarMix(+e.target.value),
+      style: {
+        flex: "1 1 220px",
+        maxWidth: 340,
+        accentColor: CL.accent
+      }
+    }), /*#__PURE__*/React.createElement("button", {
+      onClick: () => setVarMix(0.5),
+      style: {
+        fontSize: 12,
+        padding: "3px 10px",
+        borderRadius: 4,
+        border: `1px solid ${CL.border}`,
+        background: "transparent",
+        color: CL.dim,
+        cursor: "pointer"
+      }
+    }, "symmetric (SCF)")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 14,
+        marginBottom: 6
+      }
+    }, "Trial energy E = ", /*#__PURE__*/React.createElement("b", {
+      style: {
+        color: eVar > eMinSweep + 0.05 ? CL.red : CL.green,
+        fontFamily: "monospace"
+      }
+    }, eVar.toFixed(3), " eV"), Math.abs(varMix - 0.5) < 0.02 ? /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: CL.green
+      }
+    }, " \u2014 this is the minimum (the SCF solution).") : /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: CL.red
+      }
+    }, " \u2014 higher than the minimum by ", (eVar - eMinSweep).toFixed(3), " eV.")), /*#__PURE__*/React.createElement(MiniPlot, {
+      data: sweep,
+      xKey: "x",
+      yKey: "E",
+      w: 420,
+      h: 170,
+      color: CL.purple,
+      xLabel: "weight on \u03C6_A",
+      yLabel: "E (eV)",
+      marker: {
+        x: varMix,
+        y: eVar
+      },
+      seriesLabels: {
+        main: "E_trial"
+      }
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: CL.dim,
+        marginTop: 4
+      }
+    }, "The curve is the energy of the trial orbital as the A/B balance changes; the dot is your current choice. Its minimum sits at the symmetric mix (0.5/0.5) for this homonuclear molecule \u2014 the bonding orbital."));
+  })(), (() => {
+    const cHF = computeCurve("hf"),
+      cL = computeCurve("lda");
+    const merged = cHF.pts.map((p, i) => ({
+      R: p.R * BOHR2ANG,
+      HF: p.E * HA2EV,
+      LDA: cL.pts[i].E * HA2EV
+    }));
+    // converged densities at the current R for both methods (symmetrized, full)
+    const rHF = runSCF(R, "hf", 1.0, {
+      maxIter: 120,
+      conv: 1e-7,
+      symmetrize: true
+    });
+    const rLDA = runSCF(R, "lda", 1.0, {
+      maxIter: 120,
+      conv: 1e-7,
+      symmetrize: true
+    });
+    const zL = Math.min(rHF.A, rHF.B) - 3.2,
+      zH = Math.max(rHF.A, rHF.B) + 3.2,
+      NZ = 90;
+    const dens = (P, A, B) => {
+      const o = [];
+      for (let i = 0; i <= NZ; i++) {
+        const z = zL + (zH - zL) * i / NZ;
+        const pa = evalBasis(z, 0, A),
+          pb = evalBasis(z, 0, B);
+        o.push({
+          z: z * BOHR2ANG,
+          rho: P[0][0] * pa * pa + 2 * P[0][1] * pa * pb + P[1][1] * pb * pb
+        });
+      }
+      return o;
+    };
+    const dHF = dens(rHF.P, rHF.A, rHF.B),
+      dLDA = dens(rLDA.P, rLDA.A, rLDA.B);
+    const densMerged = dHF.map((p, i) => ({
+      z: p.z,
+      HF: p.rho,
+      LDA: dLDA[i].rho
+    }));
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        background: CL.card,
+        borderRadius: 8,
+        border: `1px solid ${CL.border}`,
+        padding: 12,
+        marginBottom: 14
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 16,
+        fontWeight: 600,
+        marginBottom: 2
+      }
+    }, "Hartree-Fock vs DFT (LDA) \u2014 same axes"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: CL.dim,
+        marginBottom: 8,
+        lineHeight: 1.6
+      }
+    }, "Both potential energy curves on one plot. They differ only in how electron exchange/correlation is treated (exact \u2212\xBDK vs the local LDA functional). Neither reproduces the experiment exactly \u2014 HF misses correlation entirely; LDA approximates it. The gap between them is a visible measure of the correlation energy."), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 18
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: "1 1 320px",
+        minWidth: 280
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600,
+        marginBottom: 2
+      }
+    }, "Potential energy E(R)"), /*#__PURE__*/React.createElement(MiniPlot, {
+      data: merged,
+      xKey: "R",
+      yKey: "HF",
+      w: 420,
+      h: 200,
+      color: CL.accent,
+      xLabel: "R (\xC5)",
+      yLabel: "E (eV)",
+      seriesLabels: {
+        main: "HF",
+        LDA: "LDA"
+      },
+      extraLines: [{
+        key: "LDA",
+        color: CL.orange
+      }]
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        marginTop: 4
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: CL.accent
+      }
+    }, "\u2501"), " Hartree-Fock \xA0", /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: CL.orange
+      }
+    }, "\u2501"), " DFT (LDA) \xA0", /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: CL.dim
+      }
+    }, "\xB7 Exp: R_eq=0.74 \xC5, D_e=4.75 eV"))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: "1 1 320px",
+        minWidth: 280
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600,
+        marginBottom: 2
+      }
+    }, "Electron density \u03C1(z) at R = ", Rang.toFixed(3), " \xC5"), /*#__PURE__*/React.createElement(MiniPlot, {
+      data: densMerged,
+      xKey: "z",
+      yKey: "HF",
+      w: 420,
+      h: 200,
+      color: CL.accent,
+      xLabel: "z (\xC5)",
+      yLabel: "\u03C1",
+      seriesLabels: {
+        main: "HF",
+        LDA: "LDA"
+      },
+      extraLines: [{
+        key: "LDA",
+        color: CL.orange
+      }]
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        marginTop: 4
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: CL.accent
+      }
+    }, "\u2501"), " HF density \xA0", /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: CL.orange
+      }
+    }, "\u2501"), " LDA density \xA0", /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: CL.dim
+      }
+    }, "\xB7 nearly identical here")))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: CL.dim,
+        marginTop: 8,
+        lineHeight: 1.6
+      }
+    }, "The two densities are almost on top of each other: HF and LDA give very similar charge distributions for H\u2082 near equilibrium \u2014 the difference between the methods is mostly in the ", /*#__PURE__*/React.createElement("i", null, "energy"), " (how exchange-correlation is evaluated), not in the density itself. Drag R to compare them at other bond lengths."));
+  })(), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
